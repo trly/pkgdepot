@@ -1,0 +1,42 @@
+# pkgdepot
+
+`pkgdepot` is an Arch Linux package repository server
+
+## Run
+
+The server requires a management token:
+
+```sh
+PKGDEPOT_TOKEN=change-me go run ./cmd/pkgdepot serve
+```
+
+Configuration is read from the environment:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PKGDEPOT_ADDRESS` | `:8080` | HTTP listen address |
+| `PKGDEPOT_DATA_ROOT` | `/var/lib/pkgdepot` | Repository, staging, and lock data |
+| `PKGDEPOT_TOKEN` | none | Required management bearer token |
+| `PKGDEPOT_URL` | `http://localhost:8080` | CLI server URL |
+
+The host running `serve` must provide `/usr/bin/repo-add` and `/usr/bin/repo-remove`.
+
+## CLI
+
+```sh
+PKGDEPOT_TOKEN=change-me pkgdepot publish stable x86_64 ./example-1.0-1-x86_64.pkg.tar.zst
+PKGDEPOT_TOKEN=change-me pkgdepot publish -signature ./example-1.0-1-x86_64.pkg.tar.zst.sig stable x86_64 ./example-1.0-1-x86_64.pkg.tar.zst
+PKGDEPOT_TOKEN=change-me pkgdepot list stable x86_64
+PKGDEPOT_TOKEN=change-me pkgdepot remove stable x86_64 example
+```
+
+Public repository files are available at `/repos/{repository}/{architecture}/{filename}`. A pacman repository can therefore use `Server = https://packages.example/repos/stable/$arch`.
+
+## Container
+
+Build arguments allow the build and runtime bases to be pinned to immutable digests in release automation:
+
+```sh
+docker build --build-arg ARCHLINUX_IMAGE=archlinux:base@sha256:<digest> -t pkgdepot .
+docker run --rm -p 8080:8080 -e PKGDEPOT_TOKEN=change-me -v pkgdepot:/var/lib/pkgdepot pkgdepot
+```
