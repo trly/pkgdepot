@@ -30,7 +30,14 @@ PKGDEPOT_TOKEN=change-me pkgdepot list stable x86_64
 PKGDEPOT_TOKEN=change-me pkgdepot remove stable x86_64 example
 ```
 
-Public repository files are available at `/repos/{repository}/{architecture}/{filename}`. A pacman repository can therefore use `Server = https://packages.example/repos/stable/$arch`.
+Public repository files are available at `/repos/{repository}/{architecture}/{filename}`. For example, add the following entry to `/etc/pacman.conf` to use the `stable` repository:
+
+```ini
+[pkgdepot]
+Server = https://packages.example/repos/stable/$arch
+```
+
+Replace `packages.example` with the hostname of your pkgdepot server, then run `pacman -Sy` to synchronize the repository database.
 
 ## Container
 
