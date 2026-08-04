@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"sync"
 	"syscall"
 
@@ -27,6 +28,16 @@ type Service struct {
 	root     string
 	commands command.RepositoryCommands
 	mutexes  sync.Map
+}
+
+type Repository struct {
+	Name          string   `json:"name"`
+	Architectures []string `json:"architectures"`
+}
+
+type LocatedPackage struct {
+	TargetArchitecture string
+	alpm.Package
 }
 
 func New(root string, commands command.RepositoryCommands) *Service {
@@ -156,11 +167,109 @@ func (s *Service) List(repository, architecture string) ([]alpm.Package, error) 
 	return alpm.ReadDatabase(s.databasePath(repository, architecture))
 }
 
+func (s *Service) ListRepository(repository string) ([]LocatedPackage, error) {
+	if !componentPattern.MatchString(repository) {
+		return nil, fmt.Errorf("invalid repository %q", repository)
+	}
+	architectures, err := s.repositoryArchitectures(repository)
+	if err != nil {
+		return nil, err
+	}
+
+	packages := make([]LocatedPackage, 0)
+	for _, architecture := range architectures {
+		architecturePackages, err := s.List(repository, architecture)
+		if err != nil {
+			return nil, fmt.Errorf("list repository %q architecture %q: %w", repository, architecture, err)
+		}
+		for _, pkg := range architecturePackages {
+			packages = append(packages, LocatedPackage{TargetArchitecture: architecture, Package: pkg})
+		}
+	}
+	sort.Slice(packages, func(i, j int) bool {
+		if packages[i].Name == packages[j].Name {
+			return packages[i].TargetArchitecture < packages[j].TargetArchitecture
+		}
+		return packages[i].Name < packages[j].Name
+	})
+	return packages, nil
+}
+
+func (s *Service) Repositories() ([]Repository, error) {
+	entries, err := os.ReadDir(s.repositoriesRoot())
+	if err != nil {
+		return nil, fmt.Errorf("read repositories: %w", err)
+	}
+
+	repositories := make([]Repository, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || !componentPattern.MatchString(entry.Name()) {
+			continue
+		}
+
+		architectures, err := s.repositoryArchitectures(entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		if len(architectures) != 0 {
+			repositories = append(repositories, Repository{Name: entry.Name(), Architectures: architectures})
+		}
+	}
+	return repositories, nil
+}
+
+func (s *Service) repositoryArchitectures(repository string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(s.repositoriesRoot(), repository))
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read repository %q: %w", repository, err)
+	}
+
+	architectures := make([]string, 0)
+	for _, entry := range entries {
+		architecture := entry.Name()
+		if !entry.IsDir() || !componentPattern.MatchString(architecture) {
+			continue
+		}
+		databaseInfo, err := os.Lstat(s.databasePath(repository, architecture))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect repository database for %q/%q: %w", repository, architecture, err)
+		}
+		if databaseInfo.Mode().IsRegular() {
+			architectures = append(architectures, architecture)
+		}
+	}
+	return architectures, nil
+}
+
 func (s *Service) RepositoryDirectory(repository, architecture string) (string, error) {
 	if err := validateTarget(repository, architecture); err != nil {
 		return "", err
 	}
 	return s.repositoryDirectory(repository, architecture), nil
+}
+
+func (s *Service) HasSignature(repository, architecture, filename string) (bool, error) {
+	if err := validateTarget(repository, architecture); err != nil {
+		return false, err
+	}
+	if filename == "" || filename != filepath.Base(filename) || !packagePattern.MatchString(filename) {
+		return false, fmt.Errorf("invalid package filename %q", filename)
+	}
+
+	info, err := os.Lstat(filepath.Join(s.repositoryDirectory(repository, architecture), filename+".sig"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect package signature: %w", err)
+	}
+	return info.Mode().IsRegular(), nil
 }
 
 func (s *Service) lock(repository, architecture string) (func(), error) {

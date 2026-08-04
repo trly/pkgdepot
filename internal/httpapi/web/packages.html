@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Repository}} - PKGdepot</title>
+  <link rel="stylesheet" href="/assets/pure-min.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="pure-menu pure-menu-horizontal">
+    <a class="pure-menu-heading" href="/">PKGdepot</a>
+  </header>
+  <main class="content">
+    <p class="breadcrumb"><a href="/">Repositories</a></p>
+    <h1 class="font-monospace">{{.Repository}}</h1>
+    <div class="repository-tools">
+      <form class="pure-form package-search" method="get">
+        <label for="package-search">Search packages</label>
+        <div>
+          <input id="package-search" name="q" type="search" value="{{.Query}}" placeholder="Name or description">
+          <button class="pure-button pure-button-primary" type="submit">Search</button>
+          {{if .Query}}<a class="clear-search" href="/repositories/{{.Repository}}">Clear</a>{{end}}
+        </div>
+      </form>
+      <aside class="pacman-callout">
+        <strong>Add to <code>/etc/pacman.conf</code></strong>
+        <pre><code>[{{.Repository}}]
+Server = {{.RepositoryURL}}</code></pre>
+      </aside>
+    </div>
+    {{if .Packages}}
+    <div class="table-wrap">
+      <table class="pure-table pure-table-horizontal repository-table">
+        <thead>
+          <tr>
+            <th>Package</th>
+            <th>Version</th>
+            <th>Architectures</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Packages}}
+          <tr>
+            <td><a class="font-monospace" href="{{.DetailsURL}}">{{.Name}}</a></td>
+            <td>
+              <ul class="variant-value-list">
+                {{range .Variants}}<li class="font-monospace variant-version">{{.Version}}</li>{{end}}
+              </ul>
+            </td>
+            <td>
+              <ul class="variant-value-list">
+                {{range .Variants}}
+                <li>
+                  <span class="architecture font-monospace">{{.TargetArchitecture}}</span>
+                </li>
+                {{end}}
+              </ul>
+            </td>
+            <td>{{.Description}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    {{if .Query}}<p>No packages match <strong>{{.Query}}</strong>.</p>{{else}}<p>No packages available.</p>{{end}}
+    {{end}}
+  </main>
+</body>
+</html>

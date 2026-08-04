@@ -2,6 +2,7 @@ package httpclient_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -30,7 +31,7 @@ func TestPublishReportsEarlyServerResponse(t *testing.T) {
 			Status:     "404 Not Found",
 			StatusCode: http.StatusNotFound,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"error":"route not found"}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"route not found","code":"not_found"}`)),
 			Request:    request,
 		}, nil
 	})}
@@ -38,6 +39,10 @@ func TestPublishReportsEarlyServerResponse(t *testing.T) {
 	_, err := client.Publish(context.Background(), "stable", "x86_64", packagePath, "")
 	if err == nil || err.Error() != "server returned 404 Not Found: route not found" {
 		t.Fatalf("Publish() error = %v", err)
+	}
+	var apiError *httpclient.APIError
+	if !errors.As(err, &apiError) || apiError.Code != "not_found" {
+		t.Fatalf("Publish() error code = %#v, want not_found", apiError)
 	}
 }
 

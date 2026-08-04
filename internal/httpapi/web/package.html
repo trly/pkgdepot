@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Package.Name}} - PKGdepot</title>
+  <link rel="stylesheet" href="/assets/pure-min.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="pure-menu pure-menu-horizontal">
+    <a class="pure-menu-heading" href="/">PKGdepot</a>
+  </header>
+  <main class="content">
+    <p class="breadcrumb"><a href="/">Repositories</a> / <a href="/repositories/{{.Repository}}">{{.Repository}}</a></p>
+    <h1 class="font-monospace">{{.Package.Name}}</h1>
+    {{with .Package.Description}}<p class="package-description">{{.}}</p>{{end}}
+    <div class="package-variants">
+    {{range .Package.Variants}}
+    <section class="package-variant">
+    <dl class="package-metadata">
+      <dt>Architecture</dt><dd><span class="architecture font-monospace">{{.Architecture}}</span></dd>
+      <dt>Version</dt><dd><span class="variant-version font-monospace">{{.Version}}</span></dd>
+      {{with .Description}}<dt>Description</dt><dd>{{.}}</dd>{{end}}
+      <dt>Download size</dt><dd>{{.FormattedSize}}</dd>
+      <dt>Dependencies</dt>
+      <dd>{{if .Depends}}<ul class="dependencies">{{range .Depends}}<li><code>{{.}}</code></li>{{end}}</ul>{{else}}None{{end}}</dd>
+    </dl>
+    <p class="package-downloads">
+      <a class="pure-button pure-button-primary" href="{{.DownloadURL}}">Download package</a>
+      {{if .SignatureURL}}<a class="pure-button" href="{{.SignatureURL}}">Download signature</a>{{end}}
+    </p>
+    </section>
+    {{end}}
+    </div>
+  </main>
+</body>
+</html>

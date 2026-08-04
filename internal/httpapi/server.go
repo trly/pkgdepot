@@ -1,19 +1,60 @@
 package httpapi
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
+	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/trly/pkgdepot/internal/alpm"
+	"github.com/trly/pkgdepot/internal/api"
 	"github.com/trly/pkgdepot/internal/repository"
 )
 
 const maxUploadSize = 2 << 30
+
+//go:embed web
+var webFiles embed.FS
+
+var webTemplates = template.Must(template.ParseFS(webFiles, "web/*.html"))
+
+type packagesPage struct {
+	Repository    string
+	RepositoryURL string
+	Query         string
+	Packages      []repositoryPackageView
+}
+
+type packagePage struct {
+	Repository string
+	Package    repositoryPackageView
+}
+
+type repositoryPackageView struct {
+	Name        string
+	Description string
+	DetailsURL  string
+	Variants    []packageVariantView
+}
+
+type packageVariantView struct {
+	alpm.Package
+	TargetArchitecture string
+	FormattedSize      string
+	DetailsURL         string
+	DownloadURL        string
+	SignatureURL       string
+}
 
 type Server struct {
 	repositories *repository.Service
@@ -23,12 +64,181 @@ type Server struct {
 func New(repositories *repository.Service, token string) http.Handler {
 	server := &Server{repositories: repositories, tokenHash: sha256.Sum256([]byte(token))}
 	mux := http.NewServeMux()
+	assets, err := fs.Sub(webFiles, "web/assets")
+	if err != nil {
+		panic(err)
+	}
+	mux.HandleFunc("GET /{$}", server.index)
+	mux.HandleFunc("GET /repositories/{repository}", server.packages)
+	mux.HandleFunc("GET /repositories/{repository}/{architecture}/packages/{package}", server.packageDetails)
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(assets)))
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /repos/{repository}/{architecture}/{filename}", server.download)
+	mux.HandleFunc("GET /api/v1/repositories", server.listRepositories)
 	mux.Handle("GET /api/v1/repositories/{repository}/{architecture}/packages", server.authenticate(http.HandlerFunc(server.list)))
 	mux.Handle("POST /api/v1/repositories/{repository}/{architecture}/packages", server.authenticate(http.HandlerFunc(server.publish)))
 	mux.Handle("DELETE /api/v1/repositories/{repository}/{architecture}/packages/{package}", server.authenticate(http.HandlerFunc(server.remove)))
 	return mux
+}
+
+func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
+	repositories, err := s.repositories.Repositories()
+	if err != nil {
+		http.Error(w, "discover repositories", http.StatusInternalServerError)
+		return
+	}
+
+	if err := renderHTML(w, "index.html", repositories); err != nil {
+		http.Error(w, "render repository index", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) packages(w http.ResponseWriter, r *http.Request) {
+	repositoryName := r.PathValue("repository")
+	packages, err := s.repositories.ListRepository(repositoryName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	normalizedQuery := strings.ToLower(query)
+	views, err := s.packageViews(repositoryName, packages)
+	if err != nil {
+		http.Error(w, "inspect package files", http.StatusInternalServerError)
+		return
+	}
+	if normalizedQuery != "" {
+		views = slices.DeleteFunc(views, func(view repositoryPackageView) bool {
+			if strings.Contains(strings.ToLower(view.Name), normalizedQuery) {
+				return false
+			}
+			for _, variant := range view.Variants {
+				if strings.Contains(strings.ToLower(variant.Description), normalizedQuery) {
+					return false
+				}
+			}
+			return true
+		})
+	}
+
+	page := packagesPage{
+		Repository:    repositoryName,
+		RepositoryURL: requestOrigin(r) + "/repos/" + url.PathEscape(repositoryName) + "/$arch",
+		Query:         query,
+		Packages:      views,
+	}
+	if err := renderHTML(w, "packages.html", page); err != nil {
+		http.Error(w, "render package index", http.StatusInternalServerError)
+	}
+}
+
+func requestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded == "http" || forwarded == "https" {
+		scheme = forwarded
+	}
+	return scheme + "://" + r.Host
+}
+
+func (s *Server) packageDetails(w http.ResponseWriter, r *http.Request) {
+	repositoryName := r.PathValue("repository")
+	architecture := r.PathValue("architecture")
+	packages, err := s.repositories.List(repositoryName, architecture)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	packageName := r.PathValue("package")
+	index := slices.IndexFunc(packages, func(pkg alpm.Package) bool { return pkg.Name == packageName })
+	if index < 0 {
+		http.NotFound(w, r)
+		return
+	}
+	views, err := s.packageViews(repositoryName, []repository.LocatedPackage{{
+		TargetArchitecture: architecture,
+		Package:            packages[index],
+	}})
+	if err != nil {
+		http.Error(w, "inspect package files", http.StatusInternalServerError)
+		return
+	}
+	page := packagePage{Repository: repositoryName, Package: views[0]}
+	if err := renderHTML(w, "package.html", page); err != nil {
+		http.Error(w, "render package details", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) packageViews(repositoryName string, packages []repository.LocatedPackage) ([]repositoryPackageView, error) {
+	views := make([]repositoryPackageView, 0)
+	for _, pkg := range packages {
+		if len(views) == 0 || views[len(views)-1].Name != pkg.Name {
+			views = append(views, repositoryPackageView{
+				Name:        pkg.Name,
+				Description: pkg.Description,
+				DetailsURL:  packageDetailsURL(repositoryName, pkg.TargetArchitecture, pkg.Name),
+			})
+		}
+
+		downloadURL := repositoryFileURL(repositoryName, pkg.TargetArchitecture, pkg.Filename)
+		hasSignature, err := s.repositories.HasSignature(repositoryName, pkg.TargetArchitecture, pkg.Filename)
+		if err != nil {
+			return nil, err
+		}
+		variant := packageVariantView{
+			Package:            pkg.Package,
+			TargetArchitecture: pkg.TargetArchitecture,
+			FormattedSize:      formatBytes(pkg.Size),
+			DetailsURL:         packageDetailsURL(repositoryName, pkg.TargetArchitecture, pkg.Name),
+			DownloadURL:        downloadURL,
+		}
+		if hasSignature {
+			variant.SignatureURL = downloadURL + ".sig"
+		}
+		view := &views[len(views)-1]
+		if view.Description == "" {
+			view.Description = pkg.Description
+		}
+		view.Variants = append(view.Variants, variant)
+	}
+	return views, nil
+}
+
+func repositoryFileURL(repositoryName, architecture, filename string) string {
+	return "/repos/" + url.PathEscape(repositoryName) + "/" + url.PathEscape(architecture) + "/" + url.PathEscape(filename)
+}
+
+func packageDetailsURL(repositoryName, architecture, packageName string) string {
+	return "/repositories/" + url.PathEscape(repositoryName) + "/" + url.PathEscape(architecture) + "/packages/" + url.PathEscape(packageName)
+}
+
+func formatBytes(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d bytes", size)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	value := float64(size)
+	for _, unit := range units {
+		value /= 1024
+		if value < 1024 || unit == units[len(units)-1] {
+			return fmt.Sprintf("%.1f %s", value, unit)
+		}
+	}
+	return fmt.Sprintf("%d bytes", size)
+}
+
+func renderHTML(w http.ResponseWriter, name string, data any) error {
+	var page bytes.Buffer
+	if err := webTemplates.ExecuteTemplate(&page, name, data); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = page.WriteTo(w)
+	return nil
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -82,7 +292,27 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, packages)
+	response := make([]api.Package, 0, len(packages))
+	for _, pkg := range packages {
+		response = append(response, apiPackage(pkg))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request) {
+	repositories, err := s.repositories.Repositories()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "discover repositories")
+		return
+	}
+	response := make([]api.Repository, 0, len(repositories))
+	for _, repository := range repositories {
+		response = append(response, api.Repository{
+			Name:          repository.Name,
+			Architectures: repository.Architectures,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +344,19 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, pkg)
+	writeJSON(w, http.StatusCreated, apiPackage(pkg))
+}
+
+func apiPackage(pkg alpm.Package) api.Package {
+	return api.Package{
+		Name:         pkg.Name,
+		Version:      pkg.Version,
+		Architecture: pkg.Architecture,
+		Description:  pkg.Description,
+		Filename:     pkg.Filename,
+		Size:         pkg.Size,
+		Depends:      pkg.Depends,
+	}
 }
 
 type multipartFile interface {
@@ -141,5 +383,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": fmt.Sprintf("%s", message)})
+	code := "internal_error"
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+		code = "invalid_request"
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		code = "unauthorized"
+	}
+	if status == http.StatusNotFound {
+		code = "not_found"
+	}
+	writeJSON(w, status, api.ErrorResponse{Error: fmt.Sprintf("%s", message), Code: code})
 }

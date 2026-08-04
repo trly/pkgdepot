@@ -13,7 +13,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/trly/pkgdepot/internal/alpm"
+	"github.com/trly/pkgdepot/internal/api"
 )
 
 type Client struct {
@@ -22,18 +22,30 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// APIError preserves the server's stable error code for callers that need to
+// branch on failures without parsing human-readable messages.
+type APIError struct {
+	Status  string
+	Code    string
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("server returned %s: %s", e.Status, e.Message)
+}
+
 func New(baseURL, token string) *Client {
 	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: http.DefaultClient}
 }
 
-func (c *Client) Publish(ctx context.Context, repository, architecture, packagePath, signaturePath string) (alpm.Package, error) {
+func (c *Client) Publish(ctx context.Context, repository, architecture, packagePath, signaturePath string) (api.Package, error) {
 	reader, writer := io.Pipe()
 	multipartWriter := multipart.NewWriter(writer)
 	request, err := c.request(ctx, http.MethodPost, c.packagesURL(repository, architecture), reader)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
-		return alpm.Package{}, err
+		return api.Package{}, err
 	}
 	request.Header.Set("Content-Type", multipartWriter.FormDataContentType())
 	writeResult := make(chan error, 1)
@@ -49,24 +61,24 @@ func (c *Client) Publish(ctx context.Context, repository, architecture, packageP
 		writeResult <- err
 	}()
 
-	var pkg alpm.Package
+	var pkg api.Package
 	requestErr := c.do(request, &pkg)
 	writeErr := <-writeResult
 	if writeErr != nil && (requestErr == nil || !errors.Is(writeErr, io.ErrClosedPipe)) {
-		return alpm.Package{}, writeErr
+		return api.Package{}, writeErr
 	}
 	if requestErr != nil {
-		return alpm.Package{}, requestErr
+		return api.Package{}, requestErr
 	}
 	return pkg, nil
 }
 
-func (c *Client) List(ctx context.Context, repository, architecture string) ([]alpm.Package, error) {
+func (c *Client) List(ctx context.Context, repository, architecture string) ([]api.Package, error) {
 	request, err := c.request(ctx, http.MethodGet, c.packagesURL(repository, architecture), nil)
 	if err != nil {
 		return nil, err
 	}
-	var packages []alpm.Package
+	var packages []api.Package
 	if err := c.do(request, &packages); err != nil {
 		return nil, err
 	}
@@ -102,13 +114,11 @@ func (c *Client) do(request *http.Request, destination any) error {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var apiError struct {
-			Error string `json:"error"`
-		}
+		var apiError api.ErrorResponse
 		if err := json.NewDecoder(response.Body).Decode(&apiError); err != nil || apiError.Error == "" {
 			return fmt.Errorf("server returned %s", response.Status)
 		}
-		return fmt.Errorf("server returned %s: %s", response.Status, apiError.Error)
+		return &APIError{Status: response.Status, Code: apiError.Code, Message: apiError.Error}
 	}
 	if destination == nil || response.StatusCode == http.StatusNoContent {
 		return nil

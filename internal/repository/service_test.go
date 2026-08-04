@@ -3,9 +3,12 @@ package repository_test
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/trly/pkgdepot/internal/repository"
@@ -68,6 +71,178 @@ func TestPublishRejectsWrongArchitecture(t *testing.T) {
 	}
 }
 
+func TestRepositoriesReturnsEmptyResult(t *testing.T) {
+	service := repository.New(t.TempDir(), &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := service.Repositories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repositories == nil || len(repositories) != 0 {
+		t.Fatalf("expected an empty non-nil result, got %#v", repositories)
+	}
+}
+
+func TestRepositoriesDiscoversValidDatabases(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	repositoriesRoot := filepath.Join(root, "repositories")
+	for _, target := range [][2]string{
+		{"testing", "x86_64"},
+		{"stable", "x86_64"},
+		{"stable", "aarch64"},
+	} {
+		directory := filepath.Join(repositoriesRoot, target[0], target[1])
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, target[0]+".db.tar.gz"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, directory := range []string{
+		filepath.Join(repositoriesRoot, "incomplete", "x86_64"),
+		filepath.Join(repositoriesRoot, "invalid repository", "x86_64"),
+		filepath.Join(repositoriesRoot, "stable", "invalid architecture"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, database := range []string{
+		filepath.Join(repositoriesRoot, "invalid repository", "x86_64", "invalid repository.db.tar.gz"),
+		filepath.Join(repositoriesRoot, "stable", "invalid architecture", "stable.db.tar.gz"),
+	} {
+		if err := os.WriteFile(database, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repositoriesRoot, "repository-file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repositoriesRoot, "stable", "architecture-file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repositoriesRoot, "stable"), filepath.Join(repositoriesRoot, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repositoriesRoot, "stable", "x86_64"), filepath.Join(repositoriesRoot, "stable", "linked-architecture")); err != nil {
+		t.Fatal(err)
+	}
+	symlinkDatabaseDirectory := filepath.Join(repositoriesRoot, "symlink-database", "x86_64")
+	if err := os.MkdirAll(symlinkDatabaseDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(repositoriesRoot, "stable", "x86_64", "stable.db.tar.gz"),
+		filepath.Join(symlinkDatabaseDirectory, "symlink-database.db.tar.gz"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	directoryDatabase := filepath.Join(repositoriesRoot, "directory-database", "x86_64", "directory-database.db.tar.gz")
+	if err := os.MkdirAll(directoryDatabase, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := service.Repositories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []repository.Repository{
+		{Name: "stable", Architectures: []string{"aarch64", "x86_64"}},
+		{Name: "testing", Architectures: []string{"x86_64"}},
+	}
+	if !reflect.DeepEqual(repositories, want) {
+		t.Fatalf("repositories = %#v, want %#v", repositories, want)
+	}
+}
+
+func TestListRepositoryReturnsPackagesWithTargetArchitectures(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct {
+		architecture string
+		descriptions []string
+	}{
+		{architecture: "x86_64", descriptions: []string{
+			"%FILENAME%\nbravo.pkg.tar.zst\n\n%NAME%\nbravo\n\n%VERSION%\n1-1\n\n%ARCH%\nx86_64\n",
+			"%FILENAME%\nalpha-any.pkg.tar.zst\n\n%NAME%\nalpha\n\n%VERSION%\n1-1\n\n%ARCH%\nany\n",
+		}},
+		{architecture: "aarch64", descriptions: []string{
+			"%FILENAME%\nalpha-aarch64.pkg.tar.zst\n\n%NAME%\nalpha\n\n%VERSION%\n2-1\n\n%ARCH%\naarch64\n",
+		}},
+	} {
+		directory := filepath.Join(root, "repositories", "stable", target.architecture)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeRepositoryDatabase(t, filepath.Join(directory, "stable.db.tar.gz"), target.descriptions...)
+	}
+
+	packages, err := service.ListRepository("stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 3 {
+		t.Fatalf("packages = %#v", packages)
+	}
+	want := [][3]string{
+		{"alpha", "aarch64", "aarch64"},
+		{"alpha", "x86_64", "any"},
+		{"bravo", "x86_64", "x86_64"},
+	}
+	for i, pkg := range packages {
+		got := [3]string{pkg.Name, pkg.TargetArchitecture, pkg.Architecture}
+		if got != want[i] {
+			t.Errorf("package %d = %#v, want %#v", i, got, want[i])
+		}
+	}
+}
+
+func TestHasSignature(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "repositories", "stable", "x86_64")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filename := "example-1-1-x86_64.pkg.tar.zst"
+
+	hasSignature, err := service.HasSignature("stable", "x86_64", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasSignature {
+		t.Fatal("missing signature reported as present")
+	}
+	if err := os.WriteFile(filepath.Join(directory, filename+".sig"), []byte("signature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hasSignature, err = service.HasSignature("stable", "x86_64", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasSignature {
+		t.Fatal("regular signature not reported as present")
+	}
+	if _, err := service.HasSignature("stable", "x86_64", "../package.pkg.tar.zst"); err == nil {
+		t.Fatal("expected invalid filename error")
+	}
+}
+
 func buildPackage(t *testing.T, architecture string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -83,4 +258,32 @@ func buildPackage(t *testing.T, architecture string) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func writeRepositoryDatabase(t *testing.T, path string, descriptions ...string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	archive := tar.NewWriter(gzipWriter)
+	for i, description := range descriptions {
+		name := fmt.Sprintf("package-%d/desc", i)
+		if err := archive.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(description))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := archive.Write([]byte(description)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

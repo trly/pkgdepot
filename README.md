@@ -21,6 +21,8 @@ Configuration is read from the environment:
 
 The host running `serve` must provide `/usr/bin/repo-add` and `/usr/bin/repo-remove`.
 
+The public repository index is available at `/`. Select a repository architecture to browse and download its packages.
+
 ## CLI
 
 ```sh
@@ -38,6 +40,19 @@ Server = https://packages.example/repos/stable/$arch
 ```
 
 Replace `packages.example` with the hostname of your pkgdepot server, then run `pacman -Sy` to synchronize the repository database.
+
+## HTTP API
+
+Management endpoints are versioned under `/api/v1` and require `Authorization: Bearer <token>`:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/repositories` | List repositories and architectures |
+| `GET` | `/api/v1/repositories/{repository}/{architecture}/packages` | List packages |
+| `POST` | `/api/v1/repositories/{repository}/{architecture}/packages` | Multipart upload with `package` and optional `signature` fields |
+| `DELETE` | `/api/v1/repositories/{repository}/{architecture}/packages/{package}` | Remove a package |
+
+Successful package responses use the stable API contract defined in `internal/api`. Error responses contain a human-readable `error` and a machine-readable `code` such as `invalid_request`, `not_found`, or `unauthorized`. Clients should branch on `code`, not error text.
 
 ## Container
 

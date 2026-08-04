@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Repositories - PKGdepot</title>
+  <link rel="stylesheet" href="/assets/pure-min.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="pure-menu pure-menu-horizontal">
+    <a class="pure-menu-heading" href="/">PKGdepot</a>
+  </header>
+  <main class="content">
+    <h1>Repositories</h1>
+    {{if .}}
+    <div class="table-wrap">
+    <table class="pure-table pure-table-horizontal repository-table">
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th>Architectures</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .}}
+        <tr>
+          <td><a class="font-monospace repository-link" href="/repositories/{{.Name}}">{{.Name}}</a></td>
+          <td><div class="architecture-list">{{range .Architectures}}<span class="architecture font-monospace">{{.}}</span>{{end}}</div></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}
+    <p>No repositories available.</p>
+    {{end}}
+  </main>
+</body>
+</html>
