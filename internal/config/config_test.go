@@ -41,6 +41,28 @@ func TestFromEnvDefaultURL(t *testing.T) {
 	}
 }
 
+func TestFromEnvDefaultAppName(t *testing.T) {
+	t.Setenv("PKGDEPOT_APP_NAME", "")
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppName != config.DefaultAppName {
+		t.Fatalf("AppName = %q", cfg.AppName)
+	}
+}
+
+func TestFromEnvOverridesAppName(t *testing.T) {
+	t.Setenv("PKGDEPOT_APP_NAME", "My packages")
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppName != "My packages" {
+		t.Fatalf("AppName = %q", cfg.AppName)
+	}
+}
+
 func TestFromEnvDefaultsSecurityLimits(t *testing.T) {
 	cfg, err := config.FromEnv()
 	if err != nil {

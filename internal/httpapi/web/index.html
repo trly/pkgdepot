@@ -3,17 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Repositories - PKGdepot</title>
+  <title>Repositories - {{.AppName}}</title>
   <link rel="stylesheet" href="/assets/pure-min.css">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
-  <header class="pure-menu pure-menu-horizontal">
-    <a class="pure-menu-heading" href="/">PKGdepot</a>
-  </header>
+  {{template "header" .}}
   <main class="content">
     <h1>Repositories</h1>
-    {{if .}}
+    {{if .Repositories}}
     <div class="table-wrap">
     <table class="pure-table pure-table-horizontal repository-table">
       <thead>
@@ -23,7 +21,7 @@
         </tr>
       </thead>
       <tbody>
-        {{range .}}
+        {{range .Repositories}}
         <tr>
           <td><a class="font-monospace repository-link" href="/repositories/{{.Name}}">{{.Name}}</a></td>
           <td><div class="architecture-list">{{range .Architectures}}<span class="architecture font-monospace">{{.}}</span>{{end}}</div></td>

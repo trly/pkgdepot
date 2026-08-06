@@ -28,7 +28,13 @@ var webFiles embed.FS
 
 var webTemplates = template.Must(template.ParseFS(webFiles, "web/*.html"))
 
+type indexPage struct {
+	AppName      string
+	Repositories []repository.Repository
+}
+
 type packagesPage struct {
+	AppName       string
 	Repository    string
 	RepositoryURL string
 	Query         string
@@ -36,6 +42,7 @@ type packagesPage struct {
 }
 
 type packagePage struct {
+	AppName    string
 	Repository string
 	Package    repositoryPackageView
 }
@@ -57,6 +64,7 @@ type packageVariantView struct {
 }
 
 type Server struct {
+	appName       string
 	repositories  *repository.Service
 	tokens        *token.Store
 	canonicalURL  string
@@ -64,6 +72,7 @@ type Server struct {
 }
 
 type Options struct {
+	AppName       string
 	MaxUploadSize int64
 }
 
@@ -73,6 +82,7 @@ func New(repositories *repository.Service, tokens *token.Store, canonicalURL str
 		maxUploadSize = options[0].MaxUploadSize
 	}
 	server := &Server{
+		appName:       optionsAppName(options),
 		repositories:  repositories,
 		tokens:        tokens,
 		canonicalURL:  strings.TrimRight(canonicalURL, "/"),
@@ -103,7 +113,8 @@ func (s *Server) index(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	if err := renderHTML(w, "index.html", repositories); err != nil {
+	page := indexPage{AppName: s.appName, Repositories: repositories}
+	if err := renderHTML(w, "index.html", page); err != nil {
 		http.Error(w, "render repository index", http.StatusInternalServerError)
 	}
 }
@@ -138,6 +149,7 @@ func (s *Server) packages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := packagesPage{
+		AppName:       s.appName,
 		Repository:    repositoryName,
 		RepositoryURL: s.canonicalURL + "/repos/" + url.PathEscape(repositoryName) + "/$arch",
 		Query:         query,
@@ -171,10 +183,17 @@ func (s *Server) packageDetails(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inspect package files", http.StatusInternalServerError)
 		return
 	}
-	page := packagePage{Repository: repositoryName, Package: views[0]}
+	page := packagePage{AppName: s.appName, Repository: repositoryName, Package: views[0]}
 	if err := renderHTML(w, "package.html", page); err != nil {
 		http.Error(w, "render package details", http.StatusInternalServerError)
 	}
+}
+
+func optionsAppName(options []Options) string {
+	if len(options) > 0 && options[0].AppName != "" {
+		return options[0].AppName
+	}
+	return "PKGdepot"
 }
 
 func (s *Server) packageViews(repositoryName string, packages []repository.LocatedPackage) ([]repositoryPackageView, error) {

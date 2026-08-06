@@ -218,6 +218,8 @@ func TestRepositoryIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
+		"<title>Repositories - PKGdepot</title>",
+		">PKGdepot</a>",
 		"<h1>Repositories</h1>",
 		`href="/repositories/stable">stable</a>`,
 		`<span class="architecture font-monospace">aarch64</span>`,
@@ -237,6 +239,31 @@ func TestRepositoryIndex(t *testing.T) {
 	}
 	if strings.Contains(page, `/repositories/stable/x86_64`) {
 		t.Fatalf("architectures remain navigation links: %q", page)
+	}
+}
+
+func TestRepositoryIndexUsesConfiguredAppName(t *testing.T) {
+	service := repository.New(t.TempDir(), commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080", httpapi.Options{AppName: "My packages"}))
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	for _, expected := range []string{"<title>Repositories - My packages</title>", ">My packages</a>"} {
+		if !strings.Contains(page, expected) {
+			t.Errorf("response does not contain %q", expected)
+		}
 	}
 }
 

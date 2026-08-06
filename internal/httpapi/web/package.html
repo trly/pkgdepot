@@ -3,14 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Package.Name}} - PKGdepot</title>
+  <title>{{.Package.Name}} - {{.AppName}}</title>
   <link rel="stylesheet" href="/assets/pure-min.css">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
-  <header class="pure-menu pure-menu-horizontal">
-    <a class="pure-menu-heading" href="/">PKGdepot</a>
-  </header>
+  {{template "header" .}}
   <main class="content">
     <p class="breadcrumb"><a href="/">Repositories</a> / <a href="/repositories/{{.Repository}}">{{.Repository}}</a></p>
     <h1 class="font-monospace">{{.Package.Name}}</h1>

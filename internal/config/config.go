@@ -13,6 +13,7 @@ import (
 const (
 	defaultAddress       = ":8080"
 	defaultURL           = "http://localhost:8080"
+	DefaultAppName       = "PKGdepot"
 	DefaultDataRoot      = "/var/lib/pkgdepot"
 	DefaultMaxUploadSize = 500 << 20
 	DefaultHTTPTimeout   = 30 * time.Second
@@ -20,6 +21,7 @@ const (
 
 type Config struct {
 	Address       string
+	AppName       string
 	DataRoot      string
 	URL           string
 	MaxUploadSize int64
@@ -29,6 +31,7 @@ type Config struct {
 func FromEnv() (Config, error) {
 	cfg := Config{
 		Address:       valueOrDefault("PKGDEPOT_ADDRESS", defaultAddress),
+		AppName:       valueOrDefault("PKGDEPOT_APP_NAME", DefaultAppName),
 		DataRoot:      valueOrDefault("PKGDEPOT_DATA_ROOT", DefaultDataRoot),
 		URL:           valueOrDefault("PKGDEPOT_URL", defaultURL),
 		MaxUploadSize: DefaultMaxUploadSize,

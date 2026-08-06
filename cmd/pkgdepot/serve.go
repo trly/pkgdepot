@@ -41,7 +41,7 @@ func serve(ctx context.Context, _ *cli.Command) error {
 	}
 	server := &http.Server{
 		Addr:         cfg.Address,
-		Handler:      httpapi.New(repositories, tokens, cfg.URL, httpapi.Options{MaxUploadSize: cfg.MaxUploadSize}),
+		Handler:      httpapi.New(repositories, tokens, cfg.URL, httpapi.Options{AppName: cfg.AppName, MaxUploadSize: cfg.MaxUploadSize}),
 		ReadTimeout:  cfg.HTTPTimeout,
 		WriteTimeout: cfg.HTTPTimeout,
 		IdleTimeout:  cfg.HTTPTimeout,
