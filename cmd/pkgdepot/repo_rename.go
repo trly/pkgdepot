@@ -10,7 +10,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func renameCommand() *cli.Command {
+func repoRenameCommand() *cli.Command {
 	return &cli.Command{
 		Name:        "rename",
 		Usage:       "rename a local package repository",
@@ -28,7 +28,7 @@ func renameCommand() *cli.Command {
 
 func renameRepository(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 2 {
-		return errors.New("usage: pkgdepot rename [options] <old-repository> <new-repository>")
+		return errors.New("usage: pkgdepot repo rename [options] <old-repository> <new-repository>")
 	}
 	repositories := repository.New(cmd.String("data-root"), command.NewPacman())
 	if err := repositories.Initialize(); err != nil {

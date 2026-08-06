@@ -226,6 +226,41 @@ func (s *Service) Rename(oldRepository, newRepository string) error {
 	return nil
 }
 
+func (s *Service) Create(repository string) error {
+	if err := validateTarget(repository, "any"); err != nil {
+		return err
+	}
+	directory := filepath.Join(s.repositoriesRoot(), repository)
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("repository %q already exists", repository)
+		}
+		return fmt.Errorf("create repository %q: %w", repository, err)
+	}
+	return nil
+}
+
+func (s *Service) RemoveRepository(repository string) error {
+	if err := validateTarget(repository, "any"); err != nil {
+		return err
+	}
+	directory := filepath.Join(s.repositoriesRoot(), repository)
+	info, err := os.Lstat(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("repository %q does not exist", repository)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect repository %q: %w", repository, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("repository %q is not a directory", repository)
+	}
+	if err := os.RemoveAll(directory); err != nil {
+		return fmt.Errorf("remove repository %q: %w", repository, err)
+	}
+	return nil
+}
+
 func (s *Service) ListRepository(repository string) ([]LocatedPackage, error) {
 	if !componentPattern.MatchString(repository) {
 		return nil, fmt.Errorf("invalid repository %q", repository)

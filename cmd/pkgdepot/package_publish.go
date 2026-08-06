@@ -10,7 +10,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func publishCommand() *cli.Command {
+func packagePublishCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "publish",
 		Usage:     "publish an Arch Linux package",
@@ -22,9 +22,9 @@ and package-path is the path to a local Arch Linux package archive. Use
 --signature to upload a detached signature with the package.
 
 Examples:
-		  pkgdepot publish stable ./example-1.0-1-x86_64.pkg.tar.zst
-  pkgdepot publish --architecture aarch64 stable ./example-1.0-1-aarch64.pkg.tar.zst
-  pkgdepot publish --signature ./example-1.0-1-x86_64.pkg.tar.zst.sig stable ./example-1.0-1-x86_64.pkg.tar.zst`,
+			pkgdepot package publish stable ./example-1.0-1-x86_64.pkg.tar.zst
+	  pkgdepot package publish --architecture aarch64 stable ./example-1.0-1-aarch64.pkg.tar.zst
+	  pkgdepot package publish --signature ./example-1.0-1-x86_64.pkg.tar.zst.sig stable ./example-1.0-1-x86_64.pkg.tar.zst`,
 		Flags: append(append(clientFlags(), architectureFlag()), &cli.StringFlag{
 			Name:  "signature",
 			Usage: "path to the detached package signature",
@@ -35,7 +35,7 @@ Examples:
 
 func publish(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 2 {
-		return errors.New("usage: pkgdepot publish [options] <repository> <package-path>")
+		return errors.New("usage: pkgdepot package publish [options] <repository> <package-path>")
 	}
 	client := httpclient.New(cmd.String("url"), cmd.String("token"))
 	pkg, err := client.Publish(ctx, cmd.Args().First(), cmd.String("architecture"), cmd.Args().Get(1), cmd.String("signature"))

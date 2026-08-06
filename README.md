@@ -34,16 +34,16 @@ The host running `serve` must provide `/usr/bin/repo-add` and `/usr/bin/repo-rem
 ## CLI
 
 ```sh
-PKGDEPOT_CREDENTIAL=pd_<id>_<secret> pkgdepot publish stable x86_64 ./example-1.0-1-x86_64.pkg.tar.zst
-PKGDEPOT_CREDENTIAL=pd_<id>_<secret> pkgdepot publish -signature ./example-1.0-1-x86_64.pkg.tar.zst.sig stable x86_64 ./example-1.0-1-x86_64.pkg.tar.zst
-pkgdepot list stable x86_64
-PKGDEPOT_CREDENTIAL=pd_<id>_<secret> pkgdepot remove stable x86_64 example
-pkgdepot rename stable release
+PKGDEPOT_CREDENTIAL=pd_<id>_<secret> pkgdepot package publish stable ./example-1.0-1-x86_64.pkg.tar.zst
+PKGDEPOT_CREDENTIAL=pd_<id>_<secret> pkgdepot package publish --signature ./example-1.0-1-x86_64.pkg.tar.zst.sig stable ./example-1.0-1-x86_64.pkg.tar.zst
+pkgdepot package list stable
+PKGDEPOT_CREDENTIAL=pd_<id>_<secret> pkgdepot package remove stable example
+pkgdepot repo rename stable release
 ```
 
 Use `pkgdepot token list`, `pkgdepot token revoke <id>`, and `pkgdepot token rotate <id>` to administer credentials locally. Publish and remove permissions can be scoped to a repository and architecture; token revocation is effective immediately.
 
-`pkgdepot rename` is a local maintenance command. Run it with the same data root as the server (using `--data-root` or `PKGDEPOT_DATA_ROOT`). It copies a snapshot of every architecture, renames each copied database from `<old>.db.tar.gz` to `<new>.db.tar.gz`, then removes the old repository after the new snapshot is installed. Mutations that complete during copying may not be included in the new repository. Repository-scoped tokens are not updated; create replacement tokens scoped to the new repository name.
+`pkgdepot repo create`, `pkgdepot repo list`, `pkgdepot repo remove`, and `pkgdepot repo rename` are local maintenance commands. Run them with the same data root as the server (using `--data-root` or `PKGDEPOT_DATA_ROOT`). Rename copies a snapshot of every architecture, renames each copied database from `<old>.db.tar.gz` to `<new>.db.tar.gz`, then removes the old repository after the new snapshot is installed. Mutations that complete during copying may not be included in the new repository. Repository-scoped tokens are not updated; create replacement tokens scoped to the new repository name.
 
 Public repository files are available at `/repos/{repository}/{architecture}/{filename}`. For example, add the following entry to `/etc/pacman.conf` to use the `stable` repository:
 

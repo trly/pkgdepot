@@ -10,7 +10,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func listCommand() *cli.Command {
+func packageListCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "list",
 		Usage:     "list packages",
@@ -22,7 +22,7 @@ func listCommand() *cli.Command {
 
 func list(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 1 {
-		return errors.New("usage: pkgdepot list [options] <repository>")
+		return errors.New("usage: pkgdepot package list [options] <repository>")
 	}
 	client := httpclient.New(cmd.String("url"), "")
 	packages, err := client.List(ctx, cmd.Args().First(), cmd.String("architecture"))

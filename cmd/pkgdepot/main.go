@@ -15,10 +15,8 @@ func main() {
 		Commands: []*cli.Command{
 			serveCommand(),
 			tokenCommand(),
-			publishCommand(),
-			listCommand(),
-			removeCommand(),
-			renameCommand(),
+			packageCommand(),
+			repoCommand(),
 		},
 	}
 
