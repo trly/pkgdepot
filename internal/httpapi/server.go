@@ -21,7 +21,7 @@ import (
 	"github.com/trly/pkgdepot/internal/token"
 )
 
-const maxUploadSize = 2 << 30
+const DefaultMaxUploadSize = 500 << 20
 
 //go:embed web
 var webFiles embed.FS
@@ -57,13 +57,27 @@ type packageVariantView struct {
 }
 
 type Server struct {
-	repositories *repository.Service
-	tokens       *token.Store
-	canonicalURL string
+	repositories  *repository.Service
+	tokens        *token.Store
+	canonicalURL  string
+	maxUploadSize int64
 }
 
-func New(repositories *repository.Service, tokens *token.Store, canonicalURL string) http.Handler {
-	server := &Server{repositories: repositories, tokens: tokens, canonicalURL: strings.TrimRight(canonicalURL, "/")}
+type Options struct {
+	MaxUploadSize int64
+}
+
+func New(repositories *repository.Service, tokens *token.Store, canonicalURL string, options ...Options) http.Handler {
+	maxUploadSize := int64(DefaultMaxUploadSize)
+	if len(options) > 0 && options[0].MaxUploadSize > 0 {
+		maxUploadSize = options[0].MaxUploadSize
+	}
+	server := &Server{
+		repositories:  repositories,
+		tokens:        tokens,
+		canonicalURL:  strings.TrimRight(canonicalURL, "/"),
+		maxUploadSize: maxUploadSize,
+	}
 	mux := http.NewServeMux()
 	assets, err := fs.Sub(webFiles, "web/assets")
 	if err != nil {
@@ -319,7 +333,7 @@ func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadSize)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid multipart upload")
 		return

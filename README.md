@@ -26,6 +26,8 @@ Configuration is read from the environment. `PKGDEPOT_URL` is shared by the serv
 | `PKGDEPOT_DATA_ROOT` | `/var/lib/pkgdepot` | Repository, staging, lock, and credential data |
 | `PKGDEPOT_URL` | `http://localhost:8080` | Server URL |
 | `PKGDEPOT_CREDENTIAL` | none | API credential |
+| `PKGDEPOT_MAX_UPLOAD_SIZE` | `524288000` | Maximum multipart request size in bytes |
+| `PKGDEPOT_HTTP_TIMEOUT` | `30s` | HTTP read, write, and idle timeout |
 
 The host running `serve` must provide `/usr/bin/repo-add` and `/usr/bin/repo-remove`, part of the `pacman` package from Arch Linux.
 

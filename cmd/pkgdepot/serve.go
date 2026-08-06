@@ -40,9 +40,11 @@ func serve(ctx context.Context, _ *cli.Command) error {
 		return err
 	}
 	server := &http.Server{
-		Addr:              cfg.Address,
-		Handler:           httpapi.New(repositories, tokens, cfg.URL),
-		ReadHeaderTimeout: 10 * time.Second,
+		Addr:         cfg.Address,
+		Handler:      httpapi.New(repositories, tokens, cfg.URL, httpapi.Options{MaxUploadSize: cfg.MaxUploadSize}),
+		ReadTimeout:  cfg.HTTPTimeout,
+		WriteTimeout: cfg.HTTPTimeout,
+		IdleTimeout:  cfg.HTTPTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
