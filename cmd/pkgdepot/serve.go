@@ -41,7 +41,7 @@ func serve(ctx context.Context, _ *cli.Command) error {
 	}
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpapi.New(repositories, tokens),
+		Handler:           httpapi.New(repositories, tokens, cfg.URL),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

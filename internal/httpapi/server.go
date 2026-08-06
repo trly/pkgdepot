@@ -59,10 +59,11 @@ type packageVariantView struct {
 type Server struct {
 	repositories *repository.Service
 	tokens       *token.Store
+	canonicalURL string
 }
 
-func New(repositories *repository.Service, tokens *token.Store) http.Handler {
-	server := &Server{repositories: repositories, tokens: tokens}
+func New(repositories *repository.Service, tokens *token.Store, canonicalURL string) http.Handler {
+	server := &Server{repositories: repositories, tokens: tokens, canonicalURL: strings.TrimRight(canonicalURL, "/")}
 	mux := http.NewServeMux()
 	assets, err := fs.Sub(webFiles, "web/assets")
 	if err != nil {
@@ -124,24 +125,13 @@ func (s *Server) packages(w http.ResponseWriter, r *http.Request) {
 
 	page := packagesPage{
 		Repository:    repositoryName,
-		RepositoryURL: requestOrigin(r) + "/repos/" + url.PathEscape(repositoryName) + "/$arch",
+		RepositoryURL: s.canonicalURL + "/repos/" + url.PathEscape(repositoryName) + "/$arch",
 		Query:         query,
 		Packages:      views,
 	}
 	if err := renderHTML(w, "packages.html", page); err != nil {
 		http.Error(w, "render package index", http.StatusInternalServerError)
 	}
-}
-
-func requestOrigin(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded == "http" || forwarded == "https" {
-		scheme = forwarded
-	}
-	return scheme + "://" + r.Host
 }
 
 func (s *Server) packageDetails(w http.ResponseWriter, r *http.Request) {

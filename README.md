@@ -18,18 +18,16 @@ pkgdepot token create --permission package:publish --repository stable --archite
 
 The data root is security-sensitive. Run `serve` and local `token` commands as the pkgdepot service account, or grant equivalent administrative access. The credential store below the data root is restricted to that account and contains only Argon2id hashes, not token secrets.
 
-Configuration is read from the environment:
+Configuration is read from the environment. `PKGDEPOT_URL` is shared by the server and CLI: `serve` uses it as the canonical URL in generated repository configuration, while CLI commands use it as their API endpoint. Set it to the externally reachable URL of the server.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PKGDEPOT_ADDRESS` | `:8080` | HTTP listen address |
 | `PKGDEPOT_DATA_ROOT` | `/var/lib/pkgdepot` | Repository, staging, lock, and credential data |
-| `PKGDEPOT_URL` | `http://localhost:8080` | CLI server URL |
-| `PKGDEPOT_CREDENTIAL` | none | Locally generated publish/remove API credential |
+| `PKGDEPOT_URL` | `http://localhost:8080` | Server URL |
+| `PKGDEPOT_CREDENTIAL` | none | API credential |
 
-The host running `serve` must provide `/usr/bin/repo-add` and `/usr/bin/repo-remove`.
-
-The public repository index is available at `/`. Select a repository architecture to browse and download its packages.
+The host running `serve` must provide `/usr/bin/repo-add` and `/usr/bin/repo-remove`, part of the `pacman` package from Arch Linux.
 
 ## CLI
 

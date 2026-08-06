@@ -50,7 +50,7 @@ func TestHealthAndAuthentication(t *testing.T) {
 	}
 	tokens := testTokens(t)
 	credential := testCredential(t, tokens)
-	server := httptest.NewServer(httpapi.New(service, tokens))
+	server := httptest.NewServer(httpapi.New(service, tokens, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/healthz")
@@ -111,7 +111,7 @@ func TestMutationAuthorizationUsesPermissionAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, tokens))
+	server := httptest.NewServer(httpapi.New(service, tokens, "http://localhost:8080"))
 	defer server.Close()
 
 	request, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/repositories/stable/x86_64/packages/example", nil)
@@ -156,7 +156,7 @@ func TestListRepositoriesIsPublic(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "stable.db.tar.gz"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/api/v1/repositories")
@@ -199,7 +199,7 @@ func TestRepositoryIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -259,10 +259,16 @@ func TestPackageIndex(t *testing.T) {
 		}
 		writeDatabase(t, filepath.Join(directory, "stable.db.tar.gz"), target.description)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://packages.example"))
 	defer server.Close()
 
-	response, err := http.Get(server.URL + "/repositories/stable")
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/repositories/stable", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "attacker.example"
+	request.Header.Set("X-Forwarded-Proto", "https")
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +287,7 @@ func TestPackageIndex(t *testing.T) {
 		`<h1 class="font-monospace">stable</h1>`,
 		`<strong>Add to <code>/etc/pacman.conf</code></strong>`,
 		`[stable]`,
-		`Server = ` + server.URL + `/repos/stable/$arch`,
+		`Server = http://packages.example/repos/stable/$arch`,
 		`<td><a class="font-monospace" href="/repositories/stable/aarch64/packages/example">example</a></td>`,
 		"<th>Version</th>",
 		"<th>Architectures</th>",
@@ -344,7 +350,7 @@ func TestPackageIndexUsesRepositoryArchitectureForAnyPackage(t *testing.T) {
 	writeDatabase(t, filepath.Join(directory, "stable.db.tar.gz"),
 		"%FILENAME%\nuniversal-1-1-any.pkg.tar.zst\n\n%NAME%\nuniversal\n\n%VERSION%\n1-1\n\n%ARCH%\nany\n\n%DESC%\nUniversal package\n\n%CSIZE%\n42\n",
 	)
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -390,7 +396,7 @@ func TestPackageIndexFiltersAndPreservesOrder(t *testing.T) {
 	writeDatabase(t, filepath.Join(aarch64Directory, "stable.db.tar.gz"),
 		"%FILENAME%\nalpha-1-1-aarch64.pkg.tar.zst\n\n%NAME%\nalpha\n\n%VERSION%\n1-1\n\n%DESC%\nAlternate platform utility\n\n%CSIZE%\n2048\n",
 	)
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -463,7 +469,7 @@ func TestPackageLinksAndDetails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, filename+".sig"), []byte("signature"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -531,7 +537,7 @@ func TestPackageIndexEmptyState(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -553,7 +559,7 @@ func TestRepositoryIndexEmptyState(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -575,7 +581,7 @@ func TestWebAssetsAndUnknownRoutes(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/assets/pure-min.css")
@@ -605,7 +611,7 @@ func TestAPIAndDownloadErrorsDoNotRenderHTML(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t)))
+	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
 	for _, path := range []string{
