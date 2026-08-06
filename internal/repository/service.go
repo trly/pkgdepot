@@ -167,6 +167,65 @@ func (s *Service) List(repository, architecture string) ([]alpm.Package, error) 
 	return alpm.ReadDatabase(s.databasePath(repository, architecture))
 }
 
+// Rename creates a snapshot of a repository under a new name. Mutations that
+// complete while the snapshot is copied may not be included in the new name.
+func (s *Service) Rename(oldRepository, newRepository string) error {
+	if err := validateTarget(oldRepository, "any"); err != nil {
+		return err
+	}
+	if err := validateTarget(newRepository, "any"); err != nil {
+		return err
+	}
+	if oldRepository == newRepository {
+		return errors.New("old and new repository names must differ")
+	}
+
+	oldDirectory := filepath.Join(s.repositoriesRoot(), oldRepository)
+	oldInfo, err := os.Lstat(oldDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("repository %q does not exist", oldRepository)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect repository %q: %w", oldRepository, err)
+	}
+	if !oldInfo.IsDir() {
+		return fmt.Errorf("repository %q is not a directory", oldRepository)
+	}
+
+	newDirectory := filepath.Join(s.repositoriesRoot(), newRepository)
+	if _, err := os.Lstat(newDirectory); err == nil {
+		return fmt.Errorf("repository %q already exists", newRepository)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect repository %q: %w", newRepository, err)
+	}
+
+	temporaryDirectory, err := os.MkdirTemp(s.repositoriesRoot(), "."+newRepository+"-rename-")
+	if err != nil {
+		return fmt.Errorf("create repository snapshot: %w", err)
+	}
+	defer os.RemoveAll(temporaryDirectory)
+	if err := copyDirectory(oldDirectory, temporaryDirectory); err != nil {
+		return fmt.Errorf("copy repository %q: %w", oldRepository, err)
+	}
+
+	architectures, err := repositoryArchitectures(temporaryDirectory, oldRepository)
+	if err != nil {
+		return err
+	}
+	for _, architecture := range architectures {
+		if err := renameDatabase(filepath.Join(temporaryDirectory, architecture), oldRepository, newRepository); err != nil {
+			return fmt.Errorf("rename repository database for %q/%q: %w", newRepository, architecture, err)
+		}
+	}
+	if err := os.Rename(temporaryDirectory, newDirectory); err != nil {
+		return fmt.Errorf("install repository snapshot %q: %w", newRepository, err)
+	}
+	if err := os.RemoveAll(oldDirectory); err != nil {
+		return fmt.Errorf("remove old repository %q: %w", oldRepository, err)
+	}
+	return nil
+}
+
 func (s *Service) ListRepository(repository string) ([]LocatedPackage, error) {
 	if !componentPattern.MatchString(repository) {
 		return nil, fmt.Errorf("invalid repository %q", repository)
@@ -219,7 +278,11 @@ func (s *Service) Repositories() ([]Repository, error) {
 }
 
 func (s *Service) repositoryArchitectures(repository string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(s.repositoriesRoot(), repository))
+	return repositoryArchitectures(s.repositoryDirectory(repository, ""), repository)
+}
+
+func repositoryArchitectures(directory, repository string) ([]string, error) {
+	entries, err := os.ReadDir(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return []string{}, nil
 	}
@@ -233,7 +296,7 @@ func (s *Service) repositoryArchitectures(repository string) ([]string, error) {
 		if !entry.IsDir() || !componentPattern.MatchString(architecture) {
 			continue
 		}
-		databaseInfo, err := os.Lstat(s.databasePath(repository, architecture))
+		databaseInfo, err := os.Lstat(filepath.Join(directory, architecture, repository+".db.tar.gz"))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -245,6 +308,100 @@ func (s *Service) repositoryArchitectures(repository string) ([]string, error) {
 		}
 	}
 	return architectures, nil
+}
+
+func copyDirectory(source, destination string) error {
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return fmt.Errorf("read directory: %w", err)
+	}
+	for _, entry := range entries {
+		sourcePath := filepath.Join(source, entry.Name())
+		destinationPath := filepath.Join(destination, entry.Name())
+		info, err := os.Lstat(sourcePath)
+		if err != nil {
+			return fmt.Errorf("inspect %q: %w", entry.Name(), err)
+		}
+		if info.IsDir() {
+			if err := os.Mkdir(destinationPath, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("create directory %q: %w", entry.Name(), err)
+			}
+			if err := copyDirectory(sourcePath, destinationPath); err != nil {
+				return err
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			if info.Mode()&os.ModeSymlink == 0 {
+				return fmt.Errorf("repository entry %q has unsupported type", entry.Name())
+			}
+			target, err := os.Readlink(sourcePath)
+			if err != nil {
+				return fmt.Errorf("read link %q: %w", entry.Name(), err)
+			}
+			if err := os.Symlink(target, destinationPath); err != nil {
+				return fmt.Errorf("create link %q: %w", entry.Name(), err)
+			}
+			continue
+		}
+		if err := copyFile(sourcePath, destinationPath, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("copy file %q: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func renameDatabase(directory, oldRepository, newRepository string) error {
+	oldDatabase := filepath.Join(directory, oldRepository+".db.tar.gz")
+	newDatabase := filepath.Join(directory, newRepository+".db.tar.gz")
+	if err := os.Rename(oldDatabase, newDatabase); err != nil {
+		return err
+	}
+
+	oldLink := filepath.Join(directory, oldRepository+".db")
+	linkInfo, err := os.Lstat(oldLink)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	newLink := filepath.Join(directory, newRepository+".db")
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		return os.Rename(oldLink, newLink)
+	}
+	target, err := os.Readlink(oldLink)
+	if err != nil {
+		return err
+	}
+	if target != oldRepository+".db.tar.gz" {
+		return fmt.Errorf("database link has unexpected target %q", target)
+	}
+	if err := os.Remove(oldLink); err != nil {
+		return err
+	}
+	return os.Symlink(newRepository+".db.tar.gz", newLink)
+}
+
+func copyFile(source, destination string, mode os.FileMode) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	if copyErr == nil {
+		copyErr = output.Sync()
+	}
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (s *Service) RepositoryDirectory(repository, architecture string) (string, error) {

@@ -209,6 +209,150 @@ func TestListRepositoryReturnsPackagesWithTargetArchitectures(t *testing.T) {
 	}
 }
 
+func TestRenameMovesAllArchitecturesAndDatabases(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct {
+		architecture string
+		filename     string
+	}{
+		{architecture: "aarch64", filename: "example-1-1-aarch64.pkg.tar.zst"},
+		{architecture: "x86_64", filename: "example-1-1-x86_64.pkg.tar.zst"},
+	} {
+		directory := filepath.Join(root, "repositories", "stable", target.architecture)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeRepositoryDatabase(t, filepath.Join(directory, "stable.db.tar.gz"), "%FILENAME%\n"+target.filename+"\n\n%NAME%\nexample\n\n%VERSION%\n1-1\n\n%ARCH%\n"+target.architecture+"\n")
+		if err := os.Symlink("stable.db.tar.gz", filepath.Join(directory, "stable.db")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, target.filename), []byte("package"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, target.filename+".sig"), []byte("signature"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := service.Rename("stable", "release"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "repositories", "stable")); !os.IsNotExist(err) {
+		t.Fatalf("old repository exists or could not be inspected: %v", err)
+	}
+	for _, target := range []struct {
+		architecture string
+		filename     string
+	}{
+		{architecture: "aarch64", filename: "example-1-1-aarch64.pkg.tar.zst"},
+		{architecture: "x86_64", filename: "example-1-1-x86_64.pkg.tar.zst"},
+	} {
+		directory := filepath.Join(root, "repositories", "release", target.architecture)
+		if _, err := os.Stat(filepath.Join(directory, "release.db.tar.gz")); err != nil {
+			t.Fatalf("renamed database for %s: %v", target.architecture, err)
+		}
+		linkTarget, err := os.Readlink(filepath.Join(directory, "release.db"))
+		if err != nil {
+			t.Fatalf("renamed database link for %s: %v", target.architecture, err)
+		}
+		if linkTarget != "release.db.tar.gz" {
+			t.Fatalf("database link for %s = %q, want %q", target.architecture, linkTarget, "release.db.tar.gz")
+		}
+		if _, err := os.Stat(filepath.Join(directory, "stable.db.tar.gz")); !os.IsNotExist(err) {
+			t.Fatalf("old database for %s exists or could not be inspected: %v", target.architecture, err)
+		}
+		if _, err := os.Stat(filepath.Join(directory, target.filename)); err != nil {
+			t.Fatalf("package for %s: %v", target.architecture, err)
+		}
+		if _, err := os.Stat(filepath.Join(directory, target.filename+".sig")); err != nil {
+			t.Fatalf("signature for %s: %v", target.architecture, err)
+		}
+	}
+
+	repositories, err := service.Repositories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []repository.Repository{{Name: "release", Architectures: []string{"aarch64", "x86_64"}}}
+	if !reflect.DeepEqual(repositories, want) {
+		t.Fatalf("repositories = %#v, want %#v", repositories, want)
+	}
+	packages, err := service.List("release", "x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 || packages[0].Filename != "example-1-1-x86_64.pkg.tar.zst" {
+		t.Fatalf("packages = %#v", packages)
+	}
+}
+
+func TestRenameRetainsRepositoryWhenSnapshotDatabaseRenameFails(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, architecture := range []string{"aarch64", "x86_64"} {
+		directory := filepath.Join(root, "repositories", "stable", architecture)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "stable.db.tar.gz"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "repositories", "stable", "x86_64", "release.db.tar.gz"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Rename("stable", "release"); err == nil {
+		t.Fatal("expected rename to fail")
+	}
+	if _, err := os.Stat(filepath.Join(root, "repositories", "release")); !os.IsNotExist(err) {
+		t.Fatalf("new repository exists or could not be inspected: %v", err)
+	}
+	for _, architecture := range []string{"aarch64", "x86_64"} {
+		if _, err := os.Stat(filepath.Join(root, "repositories", "stable", architecture, "stable.db.tar.gz")); err != nil {
+			t.Fatalf("original database for %s: %v", architecture, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "repositories", "stable", "x86_64", "release.db.tar.gz")); err != nil {
+		t.Fatalf("original conflicting entry: %v", err)
+	}
+}
+
+func TestRenameRejectsInvalidOrUnavailableRepositories(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range [][2]string{
+		{"invalid repository", "release"},
+		{"stable", "invalid repository"},
+		{"stable", "stable"},
+		{"stable", "release"},
+	} {
+		if err := service.Rename(target[0], target[1]); err == nil {
+			t.Errorf("Rename(%q, %q) succeeded", target[0], target[1])
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, "repositories", "stable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "repositories", "release"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Rename("stable", "release"); err == nil {
+		t.Fatal("expected existing destination error")
+	}
+}
+
 func TestHasSignature(t *testing.T) {
 	root := t.TempDir()
 	service := repository.New(root, &recordingCommands{})

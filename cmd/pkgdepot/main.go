@@ -18,6 +18,7 @@ func main() {
 			publishCommand(),
 			listCommand(),
 			removeCommand(),
+			renameCommand(),
 		},
 	}
 
