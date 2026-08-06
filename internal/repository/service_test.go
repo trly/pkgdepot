@@ -86,6 +86,25 @@ func TestRepositoriesReturnsEmptyResult(t *testing.T) {
 	}
 }
 
+func TestRepositoriesIncludesCreatedEmptyRepository(t *testing.T) {
+	service := repository.New(t.TempDir(), &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Create("empty"); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := service.Repositories()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []repository.Repository{{Name: "empty", Architectures: []string{}}}
+	if !reflect.DeepEqual(repositories, want) {
+		t.Fatalf("repositories = %#v, want %#v", repositories, want)
+	}
+}
+
 func TestRepositoriesDiscoversValidDatabases(t *testing.T) {
 	root := t.TempDir()
 	service := repository.New(root, &recordingCommands{})

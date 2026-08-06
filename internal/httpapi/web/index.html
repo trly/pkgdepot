@@ -24,7 +24,7 @@
         {{range .Repositories}}
         <tr>
           <td><a class="font-monospace repository-link" href="/repositories/{{.Name}}">{{.Name}}</a></td>
-          <td><div class="architecture-list">{{range .Architectures}}<span class="architecture font-monospace">{{.}}</span>{{end}}</div></td>
+          <td><div class="architecture-list">{{if .Architectures}}{{range .Architectures}}<span class="architecture font-monospace">{{.}}</span>{{end}}{{else}}<span>Empty, ready to publish</span>{{end}}</div></td>
         </tr>
         {{end}}
       </tbody>

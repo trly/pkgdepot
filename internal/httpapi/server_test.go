@@ -199,6 +199,9 @@ func TestRepositoryIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.Mkdir(filepath.Join(root, "repositories", "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
 	defer server.Close()
 
@@ -225,6 +228,8 @@ func TestRepositoryIndex(t *testing.T) {
 		`<span class="architecture font-monospace">aarch64</span>`,
 		`<span class="architecture font-monospace">x86_64</span>`,
 		`href="/repositories/testing">testing</a>`,
+		`href="/repositories/empty">empty</a>`,
+		"Empty, ready to publish",
 	} {
 		if !strings.Contains(string(body), expected) {
 			t.Errorf("response does not contain %q", expected)

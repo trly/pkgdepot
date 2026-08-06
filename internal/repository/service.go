@@ -305,9 +305,16 @@ func (s *Service) Repositories() ([]Repository, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(architectures) != 0 {
-			repositories = append(repositories, Repository{Name: entry.Name(), Architectures: architectures})
+		if len(architectures) == 0 {
+			contents, err := os.ReadDir(filepath.Join(s.repositoriesRoot(), entry.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("read repository %q: %w", entry.Name(), err)
+			}
+			if len(contents) != 0 {
+				continue
+			}
 		}
+		repositories = append(repositories, Repository{Name: entry.Name(), Architectures: architectures})
 	}
 	return repositories, nil
 }
