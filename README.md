@@ -104,3 +104,14 @@ Run the checks with:
 go test ./...
 go vet ./...
 ```
+
+## Releases
+
+Pushing a tag beginning with `v` publishes platform-specific archives to GitHub Releases:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Download the archive for the target platform and place the `pkgdepot` binary on `PATH`. A Linux host still needs `/usr/bin/repo-add` and `/usr/bin/repo-remove` from the Arch Linux `pacman` package when running the server.
