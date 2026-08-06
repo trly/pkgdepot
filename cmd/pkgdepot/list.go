@@ -14,18 +14,18 @@ func listCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "list",
 		Usage:     "list packages",
-		ArgsUsage: "<repository> <architecture>",
-		Flags:     []cli.Flag{urlFlag()},
+		ArgsUsage: "<repository>",
+		Flags:     []cli.Flag{urlFlag(), architectureFlag()},
 		Action:    list,
 	}
 }
 
 func list(ctx context.Context, cmd *cli.Command) error {
-	if cmd.NArg() != 2 {
-		return errors.New("usage: pkgdepot list [options] <repository> <architecture>")
+	if cmd.NArg() != 1 {
+		return errors.New("usage: pkgdepot list [options] <repository>")
 	}
 	client := httpclient.New(cmd.String("url"), "")
-	packages, err := client.List(ctx, cmd.Args().Get(0), cmd.Args().Get(1))
+	packages, err := client.List(ctx, cmd.Args().First(), cmd.String("architecture"))
 	if err != nil {
 		return err
 	}

@@ -13,6 +13,14 @@ func clientFlags() []cli.Flag {
 	}
 }
 
+func architectureFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:  "architecture",
+		Usage: "target architecture",
+		Value: "x86_64",
+	}
+}
+
 func urlFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    "url",
