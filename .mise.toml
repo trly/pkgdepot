@@ -1,3 +1,4 @@
 [tools]
+actionlint = "latest"
 go = "latest"
 hadolint = "latest"
