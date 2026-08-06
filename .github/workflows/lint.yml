@@ -1,0 +1,46 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - name: Vet
+        run: go vet ./...
+
+  dockerfile:
+    name: Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: Dockerfile
+
+  web:
+    name: HTML and CSS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+      - name: Lint HTML
+        run: npx --yes htmlhint@1.7.0 --config .htmlhintrc 'internal/httpapi/web/*.html'
+      - name: Install CSS linter
+        run: npm install --no-save stylelint@16.24.0 stylelint-config-standard@39.0.0
+      - name: Lint CSS
+        run: npx stylelint internal/httpapi/web/assets/app.css
