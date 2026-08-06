@@ -14,6 +14,7 @@ func main() {
 		Usage: "manage an Arch Linux package repository",
 		Commands: []*cli.Command{
 			serveCommand(),
+			tokenCommand(),
 			publishCommand(),
 			listCommand(),
 			removeCommand(),

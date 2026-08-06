@@ -15,7 +15,7 @@ func listCommand() *cli.Command {
 		Name:      "list",
 		Usage:     "list packages",
 		ArgsUsage: "<repository> <architecture>",
-		Flags:     clientFlags(),
+		Flags:     []cli.Flag{urlFlag()},
 		Action:    list,
 	}
 }
@@ -24,7 +24,7 @@ func list(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 2 {
 		return errors.New("usage: pkgdepot list [options] <repository> <architecture>")
 	}
-	client := httpclient.New(cmd.String("url"), cmd.String("token"))
+	client := httpclient.New(cmd.String("url"), "")
 	packages, err := client.List(ctx, cmd.Args().Get(0), cmd.Args().Get(1))
 	if err != nil {
 		return err

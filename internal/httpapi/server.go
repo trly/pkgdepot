@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -19,6 +18,7 @@ import (
 	"github.com/trly/pkgdepot/internal/alpm"
 	"github.com/trly/pkgdepot/internal/api"
 	"github.com/trly/pkgdepot/internal/repository"
+	"github.com/trly/pkgdepot/internal/token"
 )
 
 const maxUploadSize = 2 << 30
@@ -58,11 +58,11 @@ type packageVariantView struct {
 
 type Server struct {
 	repositories *repository.Service
-	tokenHash    [sha256.Size]byte
+	tokens       *token.Store
 }
 
-func New(repositories *repository.Service, token string) http.Handler {
-	server := &Server{repositories: repositories, tokenHash: sha256.Sum256([]byte(token))}
+func New(repositories *repository.Service, tokens *token.Store) http.Handler {
+	server := &Server{repositories: repositories, tokens: tokens}
 	mux := http.NewServeMux()
 	assets, err := fs.Sub(webFiles, "web/assets")
 	if err != nil {
@@ -75,9 +75,9 @@ func New(repositories *repository.Service, token string) http.Handler {
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /repos/{repository}/{architecture}/{filename}", server.download)
 	mux.HandleFunc("GET /api/v1/repositories", server.listRepositories)
-	mux.Handle("GET /api/v1/repositories/{repository}/{architecture}/packages", server.authenticate(http.HandlerFunc(server.list)))
-	mux.Handle("POST /api/v1/repositories/{repository}/{architecture}/packages", server.authenticate(http.HandlerFunc(server.publish)))
-	mux.Handle("DELETE /api/v1/repositories/{repository}/{architecture}/packages/{package}", server.authenticate(http.HandlerFunc(server.remove)))
+	mux.HandleFunc("GET /api/v1/repositories/{repository}/{architecture}/packages", server.list)
+	mux.Handle("POST /api/v1/repositories/{repository}/{architecture}/packages", server.authenticate(token.PermissionPublish, http.HandlerFunc(server.publish)))
+	mux.Handle("DELETE /api/v1/repositories/{repository}/{architecture}/packages/{package}", server.authenticate(token.PermissionRemove, http.HandlerFunc(server.remove)))
 	return mux
 }
 
@@ -241,12 +241,25 @@ func renderHTML(w http.ResponseWriter, name string, data any) error {
 	return nil
 }
 
-func (s *Server) authenticate(next http.Handler) http.Handler {
+func (s *Server) authenticate(permission string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authorization := r.Header.Get("Authorization")
 		provided, found := strings.CutPrefix(authorization, "Bearer ")
-		if !found || provided == "" || sha256.Sum256([]byte(provided)) != s.tokenHash {
+		if !found || provided == "" {
 			writeError(w, http.StatusUnauthorized, "invalid bearer token")
+			return
+		}
+		err := s.tokens.Authorize(provided, permission, r.PathValue("repository"), r.PathValue("architecture"))
+		if errors.Is(err, token.ErrUnauthorized) {
+			writeError(w, http.StatusUnauthorized, "invalid bearer token")
+			return
+		}
+		if errors.Is(err, token.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "token is not authorized for this operation")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "authenticate bearer token")
 			return
 		}
 		next.ServeHTTP(w, r)

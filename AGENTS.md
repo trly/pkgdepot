@@ -18,7 +18,7 @@
 
 ## Runtime constraints
 
-- `serve` requires `PKGDEPOT_TOKEN`; defaults otherwise target `:8080` and `/var/lib/pkgdepot`.
+- `serve` defaults to `:8080` and `/var/lib/pkgdepot`; use local `pkgdepot token` commands against the data root to manage mutation credentials.
 - Real mutations execute absolute `/usr/bin/repo-add` and `/usr/bin/repo-remove` paths with `--wait-for-lock`; changing `PATH` does not substitute them. The Docker runtime must also provide these paths.
 - Call `repository.Service.Initialize` before serving or publishing so the staging and lock roots exist.
 - Publish/remove operations are serialized per repository and architecture with both an in-process mutex and filesystem `flock`; preserve both layers when changing mutation flow.

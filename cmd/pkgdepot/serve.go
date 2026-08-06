@@ -14,6 +14,7 @@ import (
 	"github.com/trly/pkgdepot/internal/config"
 	"github.com/trly/pkgdepot/internal/httpapi"
 	"github.com/trly/pkgdepot/internal/repository"
+	"github.com/trly/pkgdepot/internal/token"
 	"github.com/urfave/cli/v3"
 )
 
@@ -34,9 +35,13 @@ func serve(ctx context.Context, _ *cli.Command) error {
 	if err := repositories.Initialize(); err != nil {
 		return err
 	}
+	tokens := token.New(cfg.DataRoot)
+	if err := tokens.Initialize(); err != nil {
+		return err
+	}
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpapi.New(repositories, cfg.Token),
+		Handler:           httpapi.New(repositories, tokens),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

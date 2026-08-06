@@ -103,7 +103,9 @@ func (c *Client) request(ctx context.Context, method, endpoint string, body io.R
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+c.Token)
+	if c.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	return request, nil
 }
 

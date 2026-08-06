@@ -1,29 +1,21 @@
 package config
 
-import (
-	"fmt"
-	"os"
-)
+import "os"
 
 const (
 	defaultAddress  = ":8080"
-	defaultDataRoot = "/var/lib/pkgdepot"
+	DefaultDataRoot = "/var/lib/pkgdepot"
 )
 
 type Config struct {
 	Address  string
 	DataRoot string
-	Token    string
 }
 
 func FromEnv() (Config, error) {
 	cfg := Config{
 		Address:  valueOrDefault("PKGDEPOT_ADDRESS", defaultAddress),
-		DataRoot: valueOrDefault("PKGDEPOT_DATA_ROOT", defaultDataRoot),
-		Token:    os.Getenv("PKGDEPOT_TOKEN"),
-	}
-	if cfg.Token == "" {
-		return Config{}, fmt.Errorf("PKGDEPOT_TOKEN is required")
+		DataRoot: valueOrDefault("PKGDEPOT_DATA_ROOT", DefaultDataRoot),
 	}
 	return cfg, nil
 }
