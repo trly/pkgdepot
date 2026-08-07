@@ -77,4 +77,4 @@ jobs:
         env:
           IMAGE: ghcr.io/trly/pkgdepot
           DIGEST: ${{ steps.publish.outputs.digest }}
-        run: echo "Canonical image: ${IMAGE}@${DIGEST}"
+        run: 'echo "Canonical image: ${IMAGE}@${DIGEST}"'
