@@ -30,6 +30,18 @@ type Service struct {
 	mutexes  sync.Map
 }
 
+// Upload is a disk-backed package upload waiting to be published.
+type Upload struct {
+	service         *Service
+	repository      string
+	architecture    string
+	directory       string
+	packagePath     string
+	packageFilename string
+	signaturePath   string
+	hasSignature    bool
+}
+
 type Repository struct {
 	Name          string   `json:"name"`
 	Architectures []string `json:"architectures"`
@@ -54,13 +66,83 @@ func (s *Service) Initialize() error {
 }
 
 func (s *Service) Publish(ctx context.Context, repository, architecture, filename string, packageReader, signatureReader io.Reader) (alpm.Package, error) {
-	if err := validateTarget(repository, architecture); err != nil {
+	upload, err := s.BeginUpload(repository, architecture)
+	if err != nil {
 		return alpm.Package{}, err
+	}
+	defer upload.Cleanup()
+	if err := upload.WritePackage(filename, packageReader); err != nil {
+		return alpm.Package{}, err
+	}
+	if signatureReader != nil {
+		if err := upload.WriteSignature(signatureReader); err != nil {
+			return alpm.Package{}, err
+		}
+	}
+	return s.PublishUpload(ctx, repository, architecture, upload)
+}
+
+// BeginUpload creates a staging directory under the service data root. The
+// caller must call Cleanup when the upload is no longer needed.
+func (s *Service) BeginUpload(repository, architecture string) (*Upload, error) {
+	if err := validateTarget(repository, architecture); err != nil {
+		return nil, err
+	}
+	directory, err := os.MkdirTemp(s.stagingRoot(), repository+"-")
+	if err != nil {
+		return nil, fmt.Errorf("create staging directory: %w", err)
+	}
+	return &Upload{
+		service:       s,
+		repository:    repository,
+		architecture:  architecture,
+		directory:     directory,
+		signaturePath: filepath.Join(directory, "signature"),
+	}, nil
+}
+
+func (u *Upload) WritePackage(filename string, reader io.Reader) error {
+	if u.packagePath != "" {
+		return errors.New("package form field was provided more than once")
 	}
 	filename = filepath.Base(filename)
 	if !packagePattern.MatchString(filename) {
-		return alpm.Package{}, fmt.Errorf("invalid package filename %q", filename)
+		return fmt.Errorf("invalid package filename %q", filename)
 	}
+	path := filepath.Join(u.directory, filename)
+	if err := writeFile(path, reader); err != nil {
+		return err
+	}
+	u.packageFilename = filename
+	u.packagePath = path
+	return nil
+}
+
+func (u *Upload) WriteSignature(reader io.Reader) error {
+	if u.hasSignature {
+		return errors.New("signature form field was provided more than once")
+	}
+	if err := writeFile(u.signaturePath, reader); err != nil {
+		return err
+	}
+	u.hasSignature = true
+	return nil
+}
+
+func (u *Upload) Cleanup() {
+	if u != nil {
+		_ = os.RemoveAll(u.directory)
+	}
+}
+
+func (s *Service) PublishUpload(ctx context.Context, repository, architecture string, upload *Upload) (alpm.Package, error) {
+	if upload == nil || upload.service != s || upload.packagePath == "" || upload.repository != repository || upload.architecture != architecture {
+		return alpm.Package{}, errors.New("package upload is incomplete")
+	}
+	if err := validateTarget(repository, architecture); err != nil {
+		return alpm.Package{}, err
+	}
+	defer upload.Cleanup()
 
 	unlock, err := s.lock(repository, architecture)
 	if err != nil {
@@ -68,17 +150,7 @@ func (s *Service) Publish(ctx context.Context, repository, architecture, filenam
 	}
 	defer unlock()
 
-	stagingDirectory, err := os.MkdirTemp(s.stagingRoot(), repository+"-")
-	if err != nil {
-		return alpm.Package{}, fmt.Errorf("create staging directory: %w", err)
-	}
-	defer os.RemoveAll(stagingDirectory)
-
-	stagedPackage := filepath.Join(stagingDirectory, filename)
-	if err := writeFile(stagedPackage, packageReader); err != nil {
-		return alpm.Package{}, err
-	}
-	pkg, err := alpm.InspectPackage(stagedPackage)
+	pkg, err := alpm.InspectPackage(upload.packagePath)
 	if err != nil {
 		return alpm.Package{}, err
 	}
@@ -90,25 +162,19 @@ func (s *Service) Publish(ctx context.Context, repository, architecture, filenam
 	if err := os.MkdirAll(repositoryDirectory, 0o755); err != nil {
 		return alpm.Package{}, fmt.Errorf("create repository directory: %w", err)
 	}
-	destination := filepath.Join(repositoryDirectory, filename)
+	destination := filepath.Join(repositoryDirectory, upload.packageFilename)
 	if _, err := os.Stat(destination); err == nil {
-		return alpm.Package{}, fmt.Errorf("package file %q already exists", filename)
+		return alpm.Package{}, fmt.Errorf("package file %q already exists", upload.packageFilename)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return alpm.Package{}, fmt.Errorf("inspect destination: %w", err)
 	}
-	if err := os.Rename(stagedPackage, destination); err != nil {
+	if err := os.Rename(upload.packagePath, destination); err != nil {
 		return alpm.Package{}, fmt.Errorf("install package: %w", err)
 	}
 
 	signatureDestination := destination + ".sig"
-	hasSignature := signatureReader != nil
-	if hasSignature {
-		stagedSignature := stagedPackage + ".sig"
-		if err := writeFile(stagedSignature, signatureReader); err != nil {
-			_ = os.Remove(destination)
-			return alpm.Package{}, err
-		}
-		if err := os.Rename(stagedSignature, signatureDestination); err != nil {
+	if upload.hasSignature {
+		if err := os.Rename(upload.signaturePath, signatureDestination); err != nil {
 			_ = os.Remove(destination)
 			return alpm.Package{}, fmt.Errorf("install package signature: %w", err)
 		}
@@ -116,12 +182,12 @@ func (s *Service) Publish(ctx context.Context, repository, architecture, filenam
 
 	if err := s.commands.Add(ctx, s.databasePath(repository, architecture), destination); err != nil {
 		_ = os.Remove(destination)
-		if hasSignature {
+		if upload.hasSignature {
 			_ = os.Remove(signatureDestination)
 		}
 		return alpm.Package{}, fmt.Errorf("update repository database: %w", err)
 	}
-	pkg.Filename = filename
+	pkg.Filename = upload.packageFilename
 	return pkg, nil
 }
 
