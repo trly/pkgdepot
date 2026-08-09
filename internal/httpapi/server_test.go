@@ -2,11 +2,13 @@ package httpapi_test
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -140,6 +142,73 @@ func TestMutationAuthorizationUsesPermissionAndScope(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("scope status = %d, want %d", response.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	tokens := testTokens(t)
+	credential := testCredential(t, tokens)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	packagePart, err := writer.CreateFormFile("package", "example-1-1-x86_64.pkg.tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := packagePart.Write(buildPackage(t, "x86_64")); err != nil {
+		t.Fatal(err)
+	}
+	signaturePart, err := writer.CreateFormFile("signature", "example.sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signaturePart.Write([]byte("signature")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(httpapi.New(service, tokens, "http://localhost:8080"))
+	defer server.Close()
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/repositories/stable/x86_64/packages", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		responseBody, _ := io.ReadAll(response.Body)
+		t.Fatalf("publish status = %d, body = %s", response.StatusCode, responseBody)
+	}
+
+	packagePath := filepath.Join(root, "repositories", "stable", "x86_64", "example-1-1-x86_64.pkg.tar")
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatal(err)
+	}
+	storedSignature, err := os.ReadFile(packagePath + ".sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(storedSignature) != "signature" {
+		t.Fatalf("stored signature = %q", storedSignature)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "staging"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("staging directory contains %d entries after publish", len(entries))
 	}
 }
 
@@ -698,4 +767,21 @@ func writeDatabase(t *testing.T, path string, descriptions ...string) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func buildPackage(t *testing.T, architecture string) []byte {
+	t.Helper()
+	var packageArchive bytes.Buffer
+	archive := tar.NewWriter(&packageArchive)
+	metadata := []byte("pkgname = example\npkgver = 1-1\narch = " + architecture + "\n")
+	if err := archive.WriteHeader(&tar.Header{Name: ".PKGINFO", Mode: 0o644, Size: int64(len(metadata))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write(metadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return packageArchive.Bytes()
 }

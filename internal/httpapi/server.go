@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -353,29 +354,59 @@ func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadSize)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	upload, err := s.repositories.BeginUpload(r.PathValue("repository"), r.PathValue("architecture"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer upload.Cleanup()
+
+	reader, err := r.MultipartReader()
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid multipart upload")
 		return
 	}
-	defer r.MultipartForm.RemoveAll()
-	packageFile, packageHeader, err := r.FormFile("package")
-	if err != nil {
+	packageFound := false
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid multipart upload")
+			return
+		}
+		switch part.FormName() {
+		case "package":
+			if packageFound || part.FileName() == "" {
+				writeError(w, http.StatusBadRequest, "package form field is required exactly once")
+				return
+			}
+			if err := upload.WritePackage(part.FileName(), part); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			packageFound = true
+		case "signature":
+			if part.FileName() == "" {
+				writeError(w, http.StatusBadRequest, "invalid signature form field")
+				return
+			}
+			if err := upload.WriteSignature(part); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "unexpected multipart form field")
+			return
+		}
+	}
+	if !packageFound {
 		writeError(w, http.StatusBadRequest, "package form field is required")
 		return
 	}
-	defer packageFile.Close()
 
-	var signatureFile multipartFile
-	signature, _, err := r.FormFile("signature")
-	if err == nil {
-		signatureFile = signature
-		defer signature.Close()
-	} else if !errors.Is(err, http.ErrMissingFile) {
-		writeError(w, http.StatusBadRequest, "invalid signature form field")
-		return
-	}
-
-	pkg, err := s.repositories.Publish(r.Context(), r.PathValue("repository"), r.PathValue("architecture"), packageHeader.Filename, packageFile, signatureFile)
+	pkg, err := s.repositories.PublishUpload(r.Context(), r.PathValue("repository"), r.PathValue("architecture"), upload)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -393,10 +424,6 @@ func apiPackage(pkg alpm.Package) api.Package {
 		Size:         pkg.Size,
 		Depends:      pkg.Depends,
 	}
-}
-
-type multipartFile interface {
-	Read([]byte) (int, error)
 }
 
 func (s *Server) remove(w http.ResponseWriter, r *http.Request) {

@@ -71,6 +71,36 @@ func TestPublishRejectsWrongArchitecture(t *testing.T) {
 	}
 }
 
+func TestUploadWritesUnderDataRootAndCleansUp(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, &recordingCommands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	upload, err := service.BeginUpload("stable", "x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upload.WritePackage("example-1-1-x86_64.pkg.tar", bytes.NewReader(buildPackage(t, "x86_64"))); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "staging"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("staging entries = %d, want 1", len(entries))
+	}
+	upload.Cleanup()
+	entries, err = os.ReadDir(filepath.Join(root, "staging"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("staging directory contains %d entries after cleanup", len(entries))
+	}
+}
+
 func TestRepositoriesReturnsEmptyResult(t *testing.T) {
 	service := repository.New(t.TempDir(), &recordingCommands{})
 	if err := service.Initialize(); err != nil {
