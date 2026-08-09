@@ -24,6 +24,11 @@ type Package struct {
 	Depends      []string `json:"depends,omitempty"`
 }
 
+const (
+	packageDecoderMaxMemory = 64 << 20
+	packageDecoderMaxWindow = 64 << 20
+)
+
 func ParsePackageInfo(r io.Reader) (Package, error) {
 	var pkg Package
 	scanner := bufio.NewScanner(r)
@@ -126,7 +131,12 @@ func compressedReader(r *os.File) (io.Reader, func(), error) {
 		}
 		return reader, nil, nil
 	case len(header) >= 4 && header[0] == 0x28 && header[1] == 0xb5 && header[2] == 0x2f && header[3] == 0xfd:
-		reader, err := zstd.NewReader(r)
+		reader, err := zstd.NewReader(r,
+			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderMaxMemory(packageDecoderMaxMemory),
+			zstd.WithDecoderMaxWindow(packageDecoderMaxWindow),
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open zstd package: %w", err)
 		}
