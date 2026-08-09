@@ -3,6 +3,8 @@ package alpm_test
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/rand"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,7 +33,7 @@ func TestInspectZstdPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compressor, err := zstd.NewWriter(file)
+	compressor, err := zstd.NewWriter(file, zstd.WithEncoderConcurrency(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,5 +57,48 @@ func TestInspectZstdPackage(t *testing.T) {
 	}
 	if pkg.Name != "example" || pkg.Filename != filepath.Base(packagePath) || pkg.Size == 0 {
 		t.Fatalf("unexpected package: %#v", pkg)
+	}
+}
+
+func TestInspectRejectsZstdWindowAboveLimit(t *testing.T) {
+	packagePath := filepath.Join(t.TempDir(), "example-1.2.3-1-x86_64.pkg.tar.zst")
+	file, err := os.Create(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressor, err := zstd.NewWriter(file, zstd.WithEncoderConcurrency(1), zstd.WithWindowSize(128<<20), zstd.WithSingleSegment(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := tar.NewWriter(compressor)
+	payload := make([]byte, 65<<20)
+	if _, err := io.ReadFull(rand.Reader, payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.WriteHeader(&tar.Header{Name: "payload", Mode: 0o644, Size: int64(len(payload))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	metadata := []byte("pkgname = example\npkgver = 1.2.3-1\narch = x86_64\n")
+	if err := archive.WriteHeader(&tar.Header{Name: ".PKGINFO", Mode: 0o644, Size: int64(len(metadata))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write(metadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := alpm.InspectPackage(packagePath); err == nil {
+		t.Fatal("expected oversized zstd window to be rejected")
 	}
 }
