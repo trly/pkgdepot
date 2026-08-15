@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/trly/pkgdepot/internal/command"
+	"github.com/trly/pkgdepot/internal/config"
 	"github.com/trly/pkgdepot/internal/repository"
 	"github.com/urfave/cli/v3"
 )
@@ -25,4 +26,13 @@ func localRepositories(cmd *cli.Command) (*repository.Service, error) {
 		return nil, err
 	}
 	return repositories, nil
+}
+
+func dataRootFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    "data-root",
+		Usage:   "pkgdepot data root",
+		Value:   config.DefaultDataRoot,
+		Sources: cli.EnvVars("PKGDEPOT_DATA_ROOT"),
+	}
 }

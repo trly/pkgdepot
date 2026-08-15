@@ -5,11 +5,6 @@ import "github.com/urfave/cli/v3"
 func clientFlags() []cli.Flag {
 	return []cli.Flag{
 		urlFlag(),
-		&cli.StringFlag{
-			Name:    "token",
-			Usage:   "locally generated API credential",
-			Sources: cli.EnvVars("PKGDEPOT_CREDENTIAL"),
-		},
 	}
 }
 
@@ -25,7 +20,7 @@ func urlFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    "url",
 		Usage:   "pkgdepot server URL",
-		Value:   "http://localhost:8080",
+		Value:   "http://127.0.0.1:8080",
 		Sources: cli.EnvVars("PKGDEPOT_URL"),
 	}
 }

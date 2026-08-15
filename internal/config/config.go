@@ -3,20 +3,22 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/trly/pkgdepot/internal/urlpolicy"
 )
 
 const (
-	defaultAddress       = ":8080"
-	defaultURL           = "http://localhost:8080"
-	DefaultAppName       = "PKGdepot"
-	DefaultDataRoot      = "/var/lib/pkgdepot"
-	DefaultMaxUploadSize = 500 << 20
-	DefaultHTTPTimeout   = 30 * time.Second
+	defaultAddress              = ":8080"
+	defaultURL                  = "http://127.0.0.1:8080"
+	DefaultAppName              = "PKGdepot"
+	DefaultDataRoot             = "/var/lib/pkgdepot"
+	DefaultMaxUploadSize        = 500 << 20
+	DefaultHTTPTimeout          = 30 * time.Second
+	DefaultOIDCKeyCacheLifetime = 15 * time.Minute
 )
 
 type Config struct {
@@ -26,6 +28,14 @@ type Config struct {
 	URL           string
 	MaxUploadSize int64
 	HTTPTimeout   time.Duration
+	Auth          OIDCConfig
+}
+
+type OIDCConfig struct {
+	Issuer           string
+	Audience         string
+	Algorithms       []string
+	KeyCacheLifetime time.Duration
 }
 
 func FromEnv() (Config, error) {
@@ -36,6 +46,12 @@ func FromEnv() (Config, error) {
 		URL:           valueOrDefault("PKGDEPOT_URL", defaultURL),
 		MaxUploadSize: DefaultMaxUploadSize,
 		HTTPTimeout:   DefaultHTTPTimeout,
+		Auth:          OIDCConfig{KeyCacheLifetime: DefaultOIDCKeyCacheLifetime},
+	}
+	cfg.Auth.Issuer = os.Getenv("PKGDEPOT_OIDC_ISSUER")
+	cfg.Auth.Audience = os.Getenv("PKGDEPOT_OIDC_AUDIENCE")
+	if algorithms := os.Getenv("PKGDEPOT_OIDC_JWT_ALGORITHMS"); algorithms != "" {
+		cfg.Auth.Algorithms = strings.FieldsFunc(algorithms, func(r rune) bool { return r == ',' || r == ' ' })
 	}
 	if err := validateURL(cfg.URL); err != nil {
 		return Config{}, err
@@ -47,7 +63,20 @@ func FromEnv() (Config, error) {
 	if cfg.HTTPTimeout, err = positiveDurationEnv("PKGDEPOT_HTTP_TIMEOUT", cfg.HTTPTimeout); err != nil {
 		return Config{}, err
 	}
+	if cfg.Auth.KeyCacheLifetime, err = positiveDurationEnv("PKGDEPOT_OIDC_JWT_CACHE_LIFETIME", cfg.Auth.KeyCacheLifetime); err != nil {
+		return Config{}, err
+	}
+	if err := validateOIDCConfig(cfg.Auth); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func validateOIDCConfig(cfg OIDCConfig) error {
+	if strings.TrimSpace(cfg.Issuer) == "" {
+		return errors.New("PKGDEPOT_OIDC_ISSUER is required")
+	}
+	return urlpolicy.Validate(cfg.Issuer, "PKGDEPOT_OIDC_ISSUER")
 }
 
 func positiveInt64Env(name string, fallback int64) (int64, error) {
@@ -75,14 +104,7 @@ func positiveDurationEnv(name string, fallback time.Duration) (time.Duration, er
 }
 
 func validateURL(value string) error {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.ContainsAny(value, "\r\n") {
-		return fmt.Errorf("PKGDEPOT_URL must be an absolute HTTP(S) URL")
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("PKGDEPOT_URL must not contain user info, query, or fragment")
-	}
-	return nil
+	return urlpolicy.Validate(value, "PKGDEPOT_URL")
 }
 
 func valueOrDefault(name, fallback string) string {

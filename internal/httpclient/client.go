@@ -2,24 +2,77 @@ package httpclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/trly/pkgdepot/internal/api"
+	"github.com/trly/pkgdepot/internal/cimd"
+	"github.com/trly/pkgdepot/internal/oauthcache"
+	"github.com/trly/pkgdepot/internal/urlpolicy"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 type Client struct {
 	BaseURL string
-	Token   string
 	HTTP    *http.Client
+	OAuth   OAuthOptions
+
+	ctx context.Context
+
+	mu           sync.Mutex
+	discoverOnce sync.Once
+	discoverErr  error
+	resourceURL  string
+	issuer       string
+	clientID     string
+	endpoint     oauth2.Endpoint
+	tokenSources map[string]oauth2.TokenSource
+	tokenStore   *oauthcache.Store
+}
+
+var cachedTokenLocks sync.Map
+
+// OAuthOptions controls OAuth credentials and user interaction used by Client.
+// The authorization server is discovered from protected-resource metadata and
+// its OpenID Connect discovery document.
+type OAuthOptions struct {
+	ClientID            string
+	ClientSecret        string
+	ExpectedIssuer      string
+	AuthorizationPrompt func(string)
+}
+
+// LoopbackPorts lists the TCP ports the CLI may bind for the OAuth loopback
+// callback. The authorization-code flow tries each port in order and uses the
+// first one that is available. Every port must be registered as a redirect URI
+// in the OIDC provider: http://127.0.0.1:<port>/oauth/callback.
+var LoopbackPorts = cimd.LoopbackPorts
+
+// LoopbackRedirectURLs returns the full set of redirect URIs that the CLI may
+// use during the authorization-code flow. Register all of them in the OIDC
+// provider so that any available port is accepted.
+func LoopbackRedirectURLs() []string {
+	return cimd.RedirectURLs()
+}
+
+type protectedResourceMetadata struct {
+	Resource             string   `json:"resource"`
+	AuthorizationServers []string `json:"authorization_servers"`
 }
 
 // APIError preserves the server's stable error code for callers that need to
@@ -34,14 +87,82 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("server returned %s: %s", e.Status, e.Message)
 }
 
-func New(baseURL, token string) *Client {
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: http.DefaultClient}
+func New(ctx context.Context, baseURL string) *Client {
+	baseURL = normalizeResourceIdentifier(baseURL)
+	return &Client{
+		BaseURL: baseURL,
+		HTTP:    http.DefaultClient,
+		OAuth: OAuthOptions{
+			ClientID:       os.Getenv("PKGDEPOT_OAUTH_CLIENT_ID"),
+			ClientSecret:   os.Getenv("PKGDEPOT_OAUTH_CLIENT_SECRET"),
+			ExpectedIssuer: os.Getenv("PKGDEPOT_OAUTH_ISSUER"),
+			AuthorizationPrompt: func(authorizationURL string) {
+				fmt.Fprintf(os.Stderr, "Open %s to authenticate.\n", authorizationURL)
+			},
+		},
+		ctx:          ctx,
+		tokenSources: make(map[string]oauth2.TokenSource),
+		tokenStore:   oauthcache.New(),
+	}
+}
+
+// SetTokenStore replaces the secure token store, primarily for tests.
+func (c *Client) SetTokenStore(store *oauthcache.Store) {
+	c.tokenStore = store
+}
+
+// Login performs a delegated authorization-code login and securely caches the
+// resulting token together with the scopes requested by the caller.
+func (c *Client) Login(ctx context.Context, scopes []string) (*oauth2.Token, error) {
+	if len(scopes) == 0 {
+		return nil, errors.New("at least one OAuth scope is required")
+	}
+	if c.OAuth.ClientSecret != "" {
+		return nil, errors.New("delegated login requires PKGDEPOT_OAUTH_CLIENT_SECRET to be unset")
+	}
+	if err := c.discover(); err != nil {
+		return nil, err
+	}
+	config := oauth2.Config{
+		ClientID: c.clientID,
+		Endpoint: c.endpoint,
+		Scopes:   append([]string{"openid"}, scopes...),
+	}
+	authContext := context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
+	token, err := (&authorizationCodeTokenSource{
+		ctx:                 authContext,
+		config:              config,
+		client:              c,
+		resource:            c.resourceURL,
+		authorizationPrompt: c.OAuth.AuthorizationPrompt,
+	}).authorize()
+	if err != nil {
+		return nil, err
+	}
+	if err := c.saveToken(token, grantedScopes(token, scopes)); err != nil {
+		return nil, err
+	}
+	return token, nil
+}
+
+func (c *Client) Logout() error {
+	if err := c.discover(); err != nil {
+		return err
+	}
+	if c.tokenStore == nil {
+		return nil
+	}
+	return c.tokenStore.Delete(c.cacheKey())
 }
 
 func (c *Client) Publish(ctx context.Context, repository, architecture, packagePath, signaturePath string) (api.Package, error) {
+	endpoint, err := c.packagesURL(repository, architecture)
+	if err != nil {
+		return api.Package{}, err
+	}
 	reader, writer := io.Pipe()
 	multipartWriter := multipart.NewWriter(writer)
-	request, err := c.request(ctx, http.MethodPost, c.packagesURL(repository, architecture), reader)
+	request, err := c.request(ctx, http.MethodPost, endpoint, reader)
 	if err != nil {
 		_ = reader.Close()
 		_ = writer.Close()
@@ -61,8 +182,14 @@ func (c *Client) Publish(ctx context.Context, repository, architecture, packageP
 		writeResult <- err
 	}()
 
+	client, err := c.authorizedClient("package:publish")
+	if err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return api.Package{}, err
+	}
 	var pkg api.Package
-	requestErr := c.do(request, &pkg)
+	requestErr := c.do(client, request, &pkg)
 	writeErr := <-writeResult
 	if writeErr != nil && (requestErr == nil || !errors.Is(writeErr, io.ErrClosedPipe)) {
 		return api.Package{}, writeErr
@@ -74,43 +201,581 @@ func (c *Client) Publish(ctx context.Context, repository, architecture, packageP
 }
 
 func (c *Client) List(ctx context.Context, repository, architecture string) ([]api.Package, error) {
-	request, err := c.request(ctx, http.MethodGet, c.packagesURL(repository, architecture), nil)
+	endpoint, err := c.packagesURL(repository, architecture)
+	if err != nil {
+		return nil, err
+	}
+	request, err := c.request(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	var packages []api.Package
-	if err := c.do(request, &packages); err != nil {
+	if err := c.do(c.HTTP, request, &packages); err != nil {
 		return nil, err
 	}
 	return packages, nil
 }
 
 func (c *Client) Remove(ctx context.Context, repository, architecture, packageName string) error {
-	endpoint := c.packagesURL(repository, architecture) + "/" + url.PathEscape(packageName)
+	endpoint, err := c.packagesURL(repository, architecture, packageName)
+	if err != nil {
+		return err
+	}
 	request, err := c.request(ctx, http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return err
 	}
-	return c.do(request, nil)
+	client, err := c.authorizedClient("package:remove")
+	if err != nil {
+		return err
+	}
+	return c.do(client, request, nil)
 }
 
-func (c *Client) packagesURL(repository, architecture string) string {
-	return c.BaseURL + "/api/v1/repositories/" + url.PathEscape(repository) + "/" + url.PathEscape(architecture) + "/packages"
+func (c *Client) packagesURL(repository, architecture string, packageName ...string) (*url.URL, error) {
+	if err := urlpolicy.Validate(c.BaseURL, "pkgdepot resource URL"); err != nil {
+		return nil, err
+	}
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse base URL: %w", err)
+	}
+	components := []string{"api", "v1", "repositories", repository, architecture, "packages"}
+	return appendURLPath(base, append(components, packageName...)...), nil
 }
 
-func (c *Client) request(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+func appendURLPath(base *url.URL, components ...string) *url.URL {
+	endpoint := *base
+	escapedComponents := make([]string, len(components))
+	for index, component := range components {
+		escapedComponents[index] = url.PathEscape(component)
+	}
+	endpoint.Path = strings.TrimRight(base.Path, "/") + "/" + strings.Join(components, "/")
+	endpoint.RawPath = strings.TrimRight(base.EscapedPath(), "/") + "/" + strings.Join(escapedComponents, "/")
+	return &endpoint
+}
+
+func (c *Client) request(ctx context.Context, method string, endpoint *url.URL, body io.Reader) (*http.Request, error) {
+	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
-	}
-	if c.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	return request, nil
 }
 
-func (c *Client) do(request *http.Request, destination any) error {
+func (c *Client) authorizedClient(scope string) (*http.Client, error) {
+	source, err := c.tokenSource(scope)
+	if err != nil {
+		return nil, err
+	}
+	return oauth2.NewClient(c.oauthContext(), source), nil
+}
+
+func (c *Client) tokenSource(scope string) (oauth2.TokenSource, error) {
+	if err := c.discover(); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if source := c.tokenSources[scope]; source != nil {
+		return source, nil
+	}
+
+	if c.OAuth.ClientSecret != "" {
+		config := clientcredentials.Config{
+			ClientID:       c.clientID,
+			ClientSecret:   c.OAuth.ClientSecret,
+			TokenURL:       c.endpoint.TokenURL,
+			Scopes:         []string{scope},
+			AuthStyle:      oauth2.AuthStyleInHeader,
+			EndpointParams: url.Values{"resource": {c.resourceURL}},
+		}
+		source := oauth2.ReuseTokenSourceWithExpiry(nil, config.TokenSource(c.oauthContext()), 30*time.Second)
+		c.tokenSources[scope] = source
+		return source, nil
+	}
+
+	config := oauth2.Config{
+		ClientID: c.clientID,
+		Endpoint: c.endpoint,
+		Scopes:   []string{"openid", scope},
+	}
+	if c.tokenStore != nil {
+		if record, err := c.tokenStore.Get(c.cacheKey()); err == nil && contains(record.Scopes, scope) {
+			source := &cachedTokenSource{
+				client: c,
+				config: config,
+				key:    c.cacheKey(),
+				scopes: record.Scopes,
+			}
+			c.tokenSources[scope] = source
+			return source, nil
+		}
+	}
+	source := oauth2.ReuseTokenSourceWithExpiry(nil, &persistingTokenSource{
+		source: &authorizationCodeTokenSource{
+			ctx:                 c.oauthContext(),
+			config:              config,
+			client:              c,
+			resource:            c.resourceURL,
+			authorizationPrompt: c.OAuth.AuthorizationPrompt,
+		},
+		client: c,
+		scopes: []string{scope},
+	}, 30*time.Second)
+	c.tokenSources[scope] = source
+	return source, nil
+}
+
+func (c *Client) discover() error {
+	if err := urlpolicy.Validate(c.BaseURL, "pkgdepot resource URL"); err != nil {
+		return err
+	}
+	c.discoverOnce.Do(func() {
+		c.discoverErr = c.doDiscover()
+	})
+	return c.discoverErr
+}
+
+func (c *Client) doDiscover() error {
+	if c.OAuth.ClientSecret != "" && c.OAuth.ExpectedIssuer == "" {
+		return errors.New("OAuth issuer is required for client credentials (set PKGDEPOT_OAUTH_ISSUER)")
+	}
+
+	var resource protectedResourceMetadata
+	if err := c.getJSON(wellKnownURL(c.BaseURL, "oauth-protected-resource"), &resource); err != nil {
+		return fmt.Errorf("discover OAuth protected resource: %w", err)
+	}
+	resourceURL := normalizeResourceIdentifier(resource.Resource)
+	if err := urlpolicy.Validate(resourceURL, "OAuth protected resource metadata resource"); err != nil {
+		return err
+	}
+	if resourceURL != c.BaseURL {
+		return fmt.Errorf("OAuth protected resource metadata resource %q does not match requested resource %q", resource.Resource, c.BaseURL)
+	}
+	issuer, err := selectIssuer(resource.AuthorizationServers, c.OAuth.ExpectedIssuer)
+	if err != nil {
+		return err
+	}
+	provider, err := oidc.NewProvider(c.oauthContext(), issuer)
+	if err != nil {
+		return fmt.Errorf("discover OpenID Connect provider: %w", err)
+	}
+	endpoint := provider.Endpoint()
+	var providerMetadata struct {
+		Issuer                            string   `json:"issuer"`
+		AuthURL                           string   `json:"authorization_endpoint"`
+		TokenURL                          string   `json:"token_endpoint"`
+		JWKSURL                           string   `json:"jwks_uri"`
+		TokenEndpointAuthMethods          []string `json:"token_endpoint_auth_methods_supported"`
+		ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported"`
+	}
+	if err := provider.Claims(&providerMetadata); err != nil {
+		return fmt.Errorf("read OpenID Connect provider metadata: %w", err)
+	}
+	if err := urlpolicy.Validate(providerMetadata.Issuer, "OpenID Connect issuer"); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{
+		"OpenID Connect authorization_endpoint": providerMetadata.AuthURL,
+		"OpenID Connect token_endpoint":         providerMetadata.TokenURL,
+		"OpenID Connect jwks_uri":               providerMetadata.JWKSURL,
+	} {
+		if value != "" {
+			if err := urlpolicy.ValidateEndpoint(value, name); err != nil {
+				return err
+			}
+		}
+	}
+	if endpoint.TokenURL == "" {
+		return errors.New("OpenID Connect provider metadata has no token_endpoint")
+	}
+	if c.OAuth.ClientSecret != "" && len(providerMetadata.TokenEndpointAuthMethods) > 0 && !contains(providerMetadata.TokenEndpointAuthMethods, "client_secret_basic") {
+		return errors.New("OpenID Connect provider metadata does not support client_secret_basic")
+	}
+	if c.OAuth.ClientSecret == "" && endpoint.AuthURL == "" {
+		return errors.New("OpenID Connect provider metadata has no authorization_endpoint")
+	}
+	clientID := c.OAuth.ClientID
+	if clientID == "" {
+		if c.OAuth.ClientSecret != "" {
+			return errors.New("OAuth client ID is required for client credentials (set PKGDEPOT_OAUTH_CLIENT_ID)")
+		}
+		clientID, err = cimd.MetadataURL(c.BaseURL)
+		if err != nil {
+			return fmt.Errorf("derive CIMD client ID: %w; use an HTTPS PKGDEPOT_URL or set PKGDEPOT_OAUTH_CLIENT_ID", err)
+		}
+		if !providerMetadata.ClientIDMetadataDocumentSupported {
+			return errors.New("OAuth provider does not support Client ID Metadata Documents; set PKGDEPOT_OAUTH_CLIENT_ID")
+		}
+	}
+
+	c.resourceURL = resourceURL
+	c.issuer = issuer
+	c.clientID = clientID
+	c.endpoint = endpoint
+	return nil
+}
+
+func (c *Client) oauthTokenSource(config oauth2.Config, token *oauth2.Token) oauth2.TokenSource {
+	return config.TokenSource(context.WithValue(c.oauthContext(), oauth2.HTTPClient, c.resourceHTTPClient()), token)
+}
+
+func (c *Client) resourceHTTPClient() *http.Client {
+	httpClient := *c.HTTP
+	httpClient.Transport = &resourceIndicatorTransport{
+		resource: c.resourceURL,
+		base:     c.HTTP.Transport,
+	}
+	return &httpClient
+}
+
+type resourceIndicatorTransport struct {
+	resource string
+	base     http.RoundTripper
+}
+
+func (t *resourceIndicatorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if req.Method == http.MethodPost {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		vals, err := url.ParseQuery(string(body))
+		if err != nil {
+			return nil, err
+		}
+		if vals.Get("grant_type") == "refresh_token" {
+			vals.Set("resource", t.resource)
+			newBody := vals.Encode()
+			req = req.Clone(req.Context())
+			req.Body = io.NopCloser(strings.NewReader(newBody))
+			req.ContentLength = int64(len(newBody))
+		} else {
+			req = req.Clone(req.Context())
+			req.Body = io.NopCloser(strings.NewReader(string(body)))
+		}
+	}
+	return base.RoundTrip(req)
+}
+
+func (c *Client) cacheKey() string {
+	return c.resourceURL + "\x00" + c.clientID + "\x00" + c.issuer
+}
+
+func (c *Client) saveToken(token *oauth2.Token, scopes []string) error {
+	if c.tokenStore == nil {
+		return errors.New("OAuth token store is not configured")
+	}
+	return c.tokenStore.Put(c.cacheKey(), oauthcache.Record{
+		Token:  *token,
+		Scopes: append([]string(nil), scopes...),
+	})
+}
+
+type persistingTokenSource struct {
+	source oauth2.TokenSource
+	client *Client
+	scopes []string
+}
+
+type cachedTokenSource struct {
+	client *Client
+	config oauth2.Config
+	key    string
+	scopes []string
+}
+
+func (s *cachedTokenSource) Token() (*oauth2.Token, error) {
+	lock, _ := cachedTokenLocks.LoadOrStore(s.key, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+
+	record, err := s.client.tokenStore.Get(s.key)
+	if err != nil {
+		return nil, err
+	}
+	if record.Token.Valid() && (record.Token.Expiry.IsZero() || time.Until(record.Token.Expiry) > 30*time.Second) {
+		return &record.Token, nil
+	}
+
+	token, err := s.client.oauthTokenSource(s.config, &record.Token).Token()
+	if err != nil {
+		token, err = (&authorizationCodeTokenSource{
+			ctx:                 s.client.oauthContext(),
+			config:              s.config,
+			client:              s.client,
+			resource:            s.client.resourceURL,
+			authorizationPrompt: s.client.OAuth.AuthorizationPrompt,
+		}).authorize()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := s.client.saveToken(token, grantedScopes(token, s.scopes)); err != nil {
+		return nil, fmt.Errorf("cache OAuth token: %w", err)
+	}
+	return token, nil
+}
+
+func (s *persistingTokenSource) Token() (*oauth2.Token, error) {
+	token, err := s.source.Token()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.client.saveToken(token, grantedScopes(token, s.scopes)); err != nil {
+		return nil, fmt.Errorf("cache OAuth token: %w", err)
+	}
+	return token, nil
+}
+
+func grantedScopes(token *oauth2.Token, requested []string) []string {
+	if extra, ok := token.Extra("scope").(string); ok && extra != "" {
+		return strings.Fields(extra)
+	}
+	return requested
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func selectIssuer(issuers []string, expected string) (string, error) {
+	if len(issuers) == 0 {
+		return "", errors.New("OAuth protected resource metadata has no authorization_servers")
+	}
+	if expected == "" {
+		if err := urlpolicy.Validate(issuers[0], "OAuth authorization server issuer"); err != nil {
+			return "", err
+		}
+		return issuers[0], nil
+	}
+	for _, issuer := range issuers {
+		if issuer == expected {
+			if err := urlpolicy.Validate(issuer, "OAuth authorization server issuer"); err != nil {
+				return "", err
+			}
+			return issuer, nil
+		}
+	}
+	return "", fmt.Errorf("discovery did not advertise expected issuer %q", expected)
+}
+
+func (c *Client) oauthContext() context.Context {
+	return context.WithValue(c.ctx, oauth2.HTTPClient, c.HTTP)
+}
+
+func (c *Client) getJSON(endpoint string, destination any) error {
+	request, err := http.NewRequestWithContext(c.ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
 	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("discovery returned %s", response.Status)
+	}
+	return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(destination)
+}
+
+type authorizationCodeTokenSource struct {
+	ctx                 context.Context
+	config              oauth2.Config
+	client              *Client
+	resource            string
+	authorizationPrompt func(string)
+
+	mu          sync.Mutex
+	refresh     oauth2.TokenSource
+	authorizing *authorizationResult
+}
+
+type authorizationResult struct {
+	done  chan struct{}
+	token *oauth2.Token
+	err   error
+}
+
+func (s *authorizationCodeTokenSource) Token() (*oauth2.Token, error) {
+	s.mu.Lock()
+	if s.refresh != nil {
+		if token, err := s.refresh.Token(); err == nil {
+			s.mu.Unlock()
+			return token, nil
+		}
+		s.refresh = nil
+	}
+	if result := s.authorizing; result != nil {
+		s.mu.Unlock()
+		select {
+		case <-result.done:
+			return result.token, result.err
+		case <-s.ctx.Done():
+			return nil, s.ctx.Err()
+		}
+	}
+	result := &authorizationResult{done: make(chan struct{})}
+	s.authorizing = result
+	s.mu.Unlock()
+
+	token, err := s.authorize()
+	s.mu.Lock()
+	if err == nil {
+		s.refresh = s.config.TokenSource(context.WithValue(s.ctx, oauth2.HTTPClient, s.client.resourceHTTPClient()), token)
+	}
+	result.token = token
+	result.err = err
+	s.authorizing = nil
+	close(result.done)
+	s.mu.Unlock()
+	return token, err
+}
+
+// listenLoopback tries each port in LoopbackPorts and returns a listener on the
+// first one that is available. If every port is occupied it returns an error
+// listing them all so the user knows exactly which redirect URIs to free.
+func listenLoopback() (net.Listener, error) {
+	for _, port := range LoopbackPorts {
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			return listener, nil
+		}
+	}
+	return nil, fmt.Errorf("all loopback ports %v are in use; free one for the OAuth callback", LoopbackPorts)
+}
+
+func (s *authorizationCodeTokenSource) authorize() (*oauth2.Token, error) {
+	state, err := randomURLValue()
+	if err != nil {
+		return nil, fmt.Errorf("generate OAuth state: %w", err)
+	}
+	verifier := oauth2.GenerateVerifier()
+
+	listener, err := listenLoopback()
+	if err != nil {
+		return nil, err
+	}
+	defer listener.Close()
+
+	loopbackRedirectURL := fmt.Sprintf("http://%s/oauth/callback", listener.Addr().String())
+	s.config.RedirectURL = loopbackRedirectURL
+	server := &http.Server{}
+	callback := make(chan authorizationCallback, 1)
+	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/oauth/callback" {
+			http.NotFound(w, request)
+			return
+		}
+		if request.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		result := authorizationCallback{code: request.URL.Query().Get("code")}
+		if request.URL.Query().Get("state") != state {
+			http.Error(w, "OAuth callback state did not match", http.StatusBadRequest)
+			return
+		}
+		if callbackError := request.URL.Query().Get("error"); callbackError != "" {
+			result.err = fmt.Errorf("OAuth authorization failed: %s", callbackError)
+		} else if result.code == "" {
+			result.err = errors.New("OAuth callback did not include an authorization code")
+		}
+		select {
+		case callback <- result:
+			if result.err != nil {
+				http.Error(w, result.err.Error(), http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, "Authentication complete. You can close this window.\n")
+		default:
+			http.Error(w, "OAuth callback has already been received", http.StatusConflict)
+		}
+	})
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	defer server.Close()
+
+	authorizationURL := s.config.AuthCodeURL(state,
+		oauth2.S256ChallengeOption(verifier),
+		oauth2.SetAuthURLParam("resource", s.resource),
+	)
+	if s.authorizationPrompt != nil {
+		s.authorizationPrompt(authorizationURL)
+	}
+
+	select {
+	case result := <-callback:
+		if result.err != nil {
+			return nil, result.err
+		}
+		token, err := s.config.Exchange(s.ctx, result.code,
+			oauth2.VerifierOption(verifier),
+			oauth2.SetAuthURLParam("resource", s.resource),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("exchange OAuth authorization code: %w", err)
+		}
+		return token, nil
+	case <-s.ctx.Done():
+		return nil, s.ctx.Err()
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return nil, fmt.Errorf("serve OAuth callback: %w", err)
+		}
+		return nil, errors.New("OAuth callback server stopped unexpectedly")
+	}
+}
+
+type authorizationCallback struct {
+	code string
+	err  error
+}
+
+func randomURLValue() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func normalizeResourceIdentifier(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return strings.TrimRight(value, "/")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = strings.TrimRight(parsed.RawPath, "/")
+	return parsed.String()
+}
+
+func wellKnownURL(issuer, document string) string {
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Path == "" || parsed.Path == "/" {
+		return strings.TrimRight(issuer, "/") + "/.well-known/" + document
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	parsed.Path = "/.well-known/" + document + path
+	parsed.RawPath = ""
+	return parsed.String()
+}
+
+func (c *Client) do(client *http.Client, request *http.Request, destination any) error {
+	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}

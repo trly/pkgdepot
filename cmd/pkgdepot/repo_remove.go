@@ -10,7 +10,7 @@ import (
 func repoRemoveCommand() *cli.Command {
 	return &cli.Command{
 		Name: "remove", Usage: "remove a local package repository", ArgsUsage: "<repository>",
-		Flags: tokenStoreFlags(), Action: repoRemove,
+		Flags: []cli.Flag{dataRootFlag()}, Action: repoRemove,
 	}
 }
 

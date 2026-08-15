@@ -37,7 +37,7 @@ func publish(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 2 {
 		return errors.New("usage: pkgdepot package publish [options] <repository> <package-path>")
 	}
-	client := httpclient.New(cmd.String("url"), cmd.String("token"))
+	client := httpclient.New(ctx, cmd.String("url"))
 	pkg, err := client.Publish(ctx, cmd.Args().First(), cmd.String("architecture"), cmd.Args().Get(1), cmd.String("signature"))
 	if err != nil {
 		return err

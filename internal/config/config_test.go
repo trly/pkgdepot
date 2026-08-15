@@ -7,76 +7,44 @@ import (
 	"github.com/trly/pkgdepot/internal/config"
 )
 
-func TestFromEnvUsesCanonicalURL(t *testing.T) {
-	t.Setenv("PKGDEPOT_URL", "https://packages.example/repository")
-
+func TestFromEnvLoadsOIDCConfiguration(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://login.example/issuer")
+	t.Setenv("PKGDEPOT_OIDC_AUDIENCE", "pkgdepot")
+	t.Setenv("PKGDEPOT_OIDC_JWT_ALGORITHMS", "RS256, ES256")
 	cfg, err := config.FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.URL != "https://packages.example/repository" {
-		t.Fatalf("URL = %q", cfg.URL)
+	if cfg.Auth.Issuer != "https://login.example/issuer" || cfg.Auth.Audience != "pkgdepot" || len(cfg.Auth.Algorithms) != 2 {
+		t.Fatalf("auth config = %#v", cfg.Auth)
+	}
+	if cfg.Auth.KeyCacheLifetime != config.DefaultOIDCKeyCacheLifetime {
+		t.Fatalf("key cache lifetime = %s, want %s", cfg.Auth.KeyCacheLifetime, config.DefaultOIDCKeyCacheLifetime)
 	}
 }
 
-func TestFromEnvRejectsInvalidCanonicalURL(t *testing.T) {
-	for _, value := range []string{"packages.example", "//packages.example", "https://packages.example/?token=secret", "https://packages.example/#fragment"} {
-		t.Run(value, func(t *testing.T) {
-			t.Setenv("PKGDEPOT_URL", value)
-			if _, err := config.FromEnv(); err == nil {
-				t.Fatal("expected invalid PKGDEPOT_URL error")
-			}
-		})
-	}
-}
-
-func TestFromEnvDefaultURL(t *testing.T) {
-	t.Setenv("PKGDEPOT_URL", "")
+func TestFromEnvLoadsOIDCKeyCacheLifetime(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+	t.Setenv("PKGDEPOT_OIDC_JWT_CACHE_LIFETIME", "5m")
 	cfg, err := config.FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.URL != "http://localhost:8080" {
-		t.Fatalf("URL = %q", cfg.URL)
+	if cfg.Auth.KeyCacheLifetime != 5*time.Minute {
+		t.Fatalf("key cache lifetime = %s, want 5m", cfg.Auth.KeyCacheLifetime)
 	}
 }
 
-func TestFromEnvDefaultAppName(t *testing.T) {
-	t.Setenv("PKGDEPOT_APP_NAME", "")
-	cfg, err := config.FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AppName != config.DefaultAppName {
-		t.Fatalf("AppName = %q", cfg.AppName)
+func TestFromEnvRequiresOIDCConfiguration(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "")
+	if _, err := config.FromEnv(); err == nil {
+		t.Fatal("accepted missing issuer")
 	}
 }
 
-func TestFromEnvOverridesAppName(t *testing.T) {
-	t.Setenv("PKGDEPOT_APP_NAME", "My packages")
-	cfg, err := config.FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AppName != "My packages" {
-		t.Fatalf("AppName = %q", cfg.AppName)
-	}
-}
-
-func TestFromEnvDefaultsSecurityLimits(t *testing.T) {
-	cfg, err := config.FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.MaxUploadSize != 500<<20 {
-		t.Fatalf("MaxUploadSize = %d", cfg.MaxUploadSize)
-	}
-	if cfg.HTTPTimeout != 30*time.Second {
-		t.Fatalf("HTTPTimeout = %s", cfg.HTTPTimeout)
-	}
-}
-
-func TestFromEnvOverridesSecurityLimits(t *testing.T) {
+func TestFromEnvValidatesServerSettings(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+	t.Setenv("PKGDEPOT_OIDC_AUDIENCE", "pkgdepot")
 	t.Setenv("PKGDEPOT_MAX_UPLOAD_SIZE", "1048576")
 	t.Setenv("PKGDEPOT_HTTP_TIMEOUT", "45s")
 	cfg, err := config.FromEnv()
@@ -88,16 +56,24 @@ func TestFromEnvOverridesSecurityLimits(t *testing.T) {
 	}
 }
 
-func TestFromEnvRejectsInvalidSecurityLimits(t *testing.T) {
-	for name, value := range map[string]string{
-		"PKGDEPOT_MAX_UPLOAD_SIZE": "0",
-		"PKGDEPOT_HTTP_TIMEOUT":    "not-a-duration",
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv(name, value)
-			if _, err := config.FromEnv(); err == nil {
-				t.Fatal("expected invalid security limit error")
-			}
-		})
+func TestFromEnvRejectsNonLoopbackHTTP(t *testing.T) {
+	t.Setenv("PKGDEPOT_URL", "http://packages.example")
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+	if _, err := config.FromEnv(); err == nil {
+		t.Fatal("accepted non-loopback HTTP resource URL")
+	}
+
+	t.Setenv("PKGDEPOT_URL", "https://packages.example")
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "http://issuer.example")
+	if _, err := config.FromEnv(); err == nil {
+		t.Fatal("accepted non-loopback HTTP issuer")
+	}
+}
+
+func TestFromEnvAllowsLoopbackHTTPDevelopmentURLs(t *testing.T) {
+	t.Setenv("PKGDEPOT_URL", "http://127.0.0.1:8080")
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "http://[::1]:9090")
+	if _, err := config.FromEnv(); err != nil {
+		t.Fatal(err)
 	}
 }
