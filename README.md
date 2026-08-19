@@ -4,7 +4,7 @@
 
 ## Run the server
 
-Because the OIDC implementation requires HTTPS, run `pkgdepot` behind a TLS
+Non-loopback deployments require HTTPS. Run `pkgdepot` behind a TLS
 reverse proxy. This example uses [Caddy](https://caddyserver.com), which obtains and renews a
 certificate automatically. Set `packages.example.com` to a DNS name pointing
 to the host running `pkgdepot`, and make ports 80 and 443 reachable from the
@@ -99,22 +99,30 @@ the permission required by each mutation:
 | Publish a package | `package:publish` |
 | Remove a package | `package:remove` |
 
-The OIDC/OAuth provider must provide:
+The OIDC/OAuth provider must satisfy every item below:
 
-- OpenID Connect discovery for the configured issuer, including a JWKS URI.
-- Signed JWT access tokens with the expected issuer, expiry, and an audience
-  equal to `PKGDEPOT_OIDC_AUDIENCE` (by default, `PKGDEPOT_URL`).
-- OAuth scopes in the token's `scope` claim and a policy that grants
-  `package:publish`, `package:remove`, or both to each authorized client.
-- RFC 8707 resource indicator support. The CLI sends
-  `resource=PKGDEPOT_URL`; the provider must use that resource as the access
-  token audience and apply the corresponding scope grants.
-- Client credentials for automation, or authorization code with PKCE for
-  interactive users. Client credentials must support `client_secret_basic`,
-  advertised in `token_endpoint_auth_methods_supported`.
+- **Discovery.** Publish OpenID Connect discovery metadata at the standard path
+  for the configured issuer, including a `jwks_uri`.
+- **RFC 9068 access tokens.** Issue signed JWT access tokens whose JOSE header
+  sets `typ` to `at+jwt` or `application/at+jwt`.
+- **Required claims.** Each access token must carry `iss`, `aud`, `exp`, `sub`,
+  `client_id`, `jti`, and a positive `iat`. Scopes must appear in the `scp`
+  array claim, the `scope` space-delimited claim, or both.
+- **Signing algorithm.** Default RS256; override with
+  `PKGDEPOT_OIDC_JWT_ALGORITHMS`.
+- **RFC 8707 resource indicators.** Accept a `resource` parameter in
+  authorization and token requests and use it as the access token audience.
+- **Client credentials (optional).** Support `client_secret_basic` token
+  endpoint authentication, or omit `token_endpoint_auth_methods_supported`
+  entirely.
+- **Authorization code with PKCE (optional).** Support PKCE with S256 for
+  delegated CLI login. Advertise `client_id_metadata_document_supported: true`
+  so the CLI can register loopback redirect URIs on ports 8085 through 8089.
+- **HTTPS.** All issuer and endpoint URLs must use HTTPS, except loopback
+  addresses for local development.
 
-pkgdepot has no local users, groups, roles, OAuth clients, or permission policy.
-Opaque access tokens and token introspection are not supported.
+pkgdepot has no local users, groups, roles, OAuth clients, or permission
+policy. Opaque access tokens and token introspection are not supported.
 
 Signing keys are refreshed at least every 15 minutes by default, including keys
 that still verify successfully. Set `PKGDEPOT_OIDC_JWT_CACHE_LIFETIME` to a
@@ -196,13 +204,6 @@ supplies a refresh token.
 PKGDEPOT_URL=https://packages.example.com \
 pkgdepot package remove stable example
 ```
-
-**Future web user delegation**
-
-A web UI should use its own OIDC client and an HTTPS callback registered with
-the provider. It uses the same authorization-code-with-PKCE flow, resource,
-and mutation scopes as the delegated CLI. Its issued access tokens already
-match the server contract, so no resource-server changes are required.
 
 ### Environment Variables
 
