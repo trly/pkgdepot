@@ -53,8 +53,10 @@ docker compose exec pkgdepot pkgdepot repo create stable
 ### Authenticate and publish a package
 
 Configure an OAuth provider and issue tokens that carry a `pkgdepot_roles`
-claim containing `publisher` or `admin`. pkgdepot authorizes mutations solely
-from this role claim; the provider's API scopes are not used for authorization.
+claim containing `publisher` or `admin`. pkgdepot authorizes delegated mutations
+from this role claim, using its own server-side role-to-scope mapping. Client
+credentials tokens can alternatively authorize from their OAuth `scope` or
+`scp` claim when the server is configured for the provider's subject format.
 Then authenticate the CLI against the server. With an HTTPS `PKGDEPOT_URL`,
 the CLI uses a Client ID Metadata Document served by pkgdepot by default, so
 no client ID is required. For the default local HTTP URL, set
@@ -92,10 +94,11 @@ pacman -Syu example
 ## Authentication and Authorization
 
 pkgdepot is an OAuth 2.0 protected resource. The provider authenticates users
-or clients and issues access tokens. Provider API scopes describe the operations
-an OAuth connection may request; pkgdepot does not use provider-issued scopes for
-authorization. Instead, it authorizes each mutation from roles in a signed
-access-token claim, using its own server-side role-to-scope mapping:
+or clients and issues access tokens. Delegated tokens are authorized from roles
+in a signed access-token claim, using the server-side role-to-scope mapping.
+Client credentials tokens can alternatively authorize from their OAuth `scope`
+or `scp` claim when `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` is
+configured for the provider's subject format:
 
 | Mutation | Required scope |
 | --- | --- |
@@ -109,8 +112,9 @@ The OIDC/OAuth provider must satisfy every item below:
 - **RFC 9068 access tokens.** Issue signed JWT access tokens whose JOSE header
   sets `typ` to `at+jwt` or `application/at+jwt`.
 - **Required claims.** Each access token must carry `iss`, `aud`, `exp`, `sub`,
-  `client_id`, `jti`, and a positive `iat`. To authorize mutations, it must also
-  carry a JSON string-array role claim named `pkgdepot_roles` by default.
+  `client_id`, `jti`, and a positive `iat`. Delegated tokens must also carry a
+  JSON string-array role claim named `pkgdepot_roles` by default. Client
+  credentials tokens may instead authorize from their OAuth scope claim.
 - **Signing algorithm.** Default RS256; override with
   `PKGDEPOT_OIDC_JWT_ALGORITHMS`.
 - **RFC 8707 resource indicators.** Accept a `resource` parameter in
@@ -135,13 +139,14 @@ RBAC is evaluated as follows:
 
 1. pkgdepot validates the signed access token and reads the role array from
    `PKGDEPOT_ROLE_CLAIM` (default: `pkgdepot_roles`).
-2. Each role is looked up in `PKGDEPOT_ROLE_SCOPES`.
-3. The token is authorized when any of its roles grants the scope required by
-   the requested operation.
+2. Tokens with roles use the role-to-scope mapping in `PKGDEPOT_ROLE_SCOPES`.
+3. Role-less tokens whose subject matches
+   `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` are authorized from their
+   OAuth `scope` or `scp` claim.
 
-Tokens with no roles, unknown roles, or roles that do not grant the requested
-   scope are denied. Roles are not inferred from OAuth `scope` or `scp`
-   claims. The role claim must be a JSON string array, for example:
+Tokens with unknown roles or roles that do not grant the requested scope are
+denied. A role-less token must contain the requested OAuth scope. The role
+claim, when present, must be a JSON string array, for example:
 
 ```json
 {"pkgdepot_roles":["publisher"]}
@@ -165,8 +170,10 @@ pkgdepot serve
 ```
 
 Grant only the roles and scopes required by each user or client at the
-identity provider. A client requesting `package:remove` still cannot remove
-packages unless its token contains a role mapped to `package:remove`.
+identity provider. A delegated client requesting `package:remove` still cannot
+remove packages unless its token contains a role mapped to `package:remove`.
+Client credentials tokens use a different authorization path governed by
+`PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE`.
 
 Signing keys are refreshed at least every 15 minutes by default, including keys
 that still verify successfully. Set `PKGDEPOT_OIDC_JWT_CACHE_LIFETIME` to a
@@ -190,19 +197,17 @@ packages using the client-credentials flow:
 4. Open the new client's **API Access** section. For the `pkgdepot` API, grant
     `package:publish` and `package:remove` under **Client access**. These are
     machine-to-machine grants, not **User-delegated access** grants.
-5. Configure the token subject with the `pkgdepot_roles` custom claim. Its value
-   must be a JSON array containing `admin` to permit both mutations, or
-   `publisher` to permit publishing only. For a different claim name or role
-   mapping, set `PKGDEPOT_ROLE_CLAIM` or `PKGDEPOT_ROLE_SCOPES`.
-6. Start pkgdepot with the Pocket ID issuer and the same API resource:
+5. Start pkgdepot with the Pocket ID issuer, the same API resource, and the
+   subject template that matches Pocket ID's client-credentials `sub` format:
 
    ```sh
    PKGDEPOT_URL=https://packages.example.com \
    PKGDEPOT_OIDC_ISSUER=https://id.example.com \
+   PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE=client-{client_id} \
    pkgdepot serve
    ```
 
-7. Configure the CLI with that confidential client. Pinning the issuer prevents
+6. Configure the CLI with that confidential client. Pinning the issuer prevents
    credentials from being sent to an issuer other than Pocket ID:
 
    ```sh
@@ -213,10 +218,11 @@ packages using the client-credentials flow:
    pkgdepot package publish stable ./example-1.0-1-x86_64.pkg.tar.zst
    ```
 
-Pocket ID now issues a JWT whose audience is the API resource. The scope claim
-is present for OAuth protocol compatibility but pkgdepot authorizes the operation
-solely from the signed role claim. The same pkgdepot server configuration works
-with any provider that meets the requirements above.
+Pocket ID now issues a JWT whose audience is the API resource. For
+client-credentials tokens, pkgdepot authorizes the requested operation from
+Pocket ID's signed `scope`/`scp` claim using the configured subject template.
+Delegated tokens use the role claim and role mapping. The same pkgdepot server
+configuration works with any provider that meets the requirements above.
 
 ### CLI Flows
 
@@ -270,6 +276,7 @@ pkgdepot package remove stable example
 | `PKGDEPOT_OIDC_JWT_CACHE_LIFETIME` | `15m` | Maximum time a successfully fetched OIDC signing-key set is trusted before refresh. |
 | `PKGDEPOT_ROLE_CLAIM` | `pkgdepot_roles` | Access-token claim containing the token subject's roles as a JSON string array. |
 | `PKGDEPOT_ROLE_SCOPES` | `{"admin":["package:publish","package:remove"],"publisher":["package:publish"]}` | JSON object mapping roles to permitted scopes. |
+| `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` | Empty (disabled) | Subject template for client-credentials scope authorization. Must contain exactly one `{client_id}` placeholder, expanded to the signed `client_id` claim. For example, `client-{client_id}` matches Pocket ID's subject format. Empty disables scope-only authorization. |
 | `PKGDEPOT_OAUTH_CLIENT_ID` | CIMD URL derived from HTTPS `PKGDEPOT_URL` | Pre-registered OIDC client ID override; required for delegated login when `PKGDEPOT_URL` is HTTP. |
 | `PKGDEPOT_OAUTH_CLIENT_SECRET` | Empty | Enables client-credentials automation; omit for delegated CLI login. |
 | `PKGDEPOT_OAUTH_ISSUER` | Required with client secret | Expected issuer pin for client credentials. |

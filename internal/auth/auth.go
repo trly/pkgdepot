@@ -24,8 +24,10 @@ const (
 
 // Claims are the access-token claims relevant to a protected resource server.
 type Claims struct {
-	Scopes []string
-	Roles  []string
+	Scopes   []string
+	Roles    []string
+	Subject  string
+	ClientID string
 }
 
 // DefaultRoleScopes returns the built-in roles for a new PKGdepot server.
@@ -75,14 +77,34 @@ func HasScope(claims Claims, scope string) bool {
 	return slices.Contains(claims.Scopes, scope)
 }
 
-// AuthorizeRoles reports whether any role grants the requested scope.
-func AuthorizeRoles(claims Claims, scope string, roleScopes map[string][]string) bool {
+// AuthorizeRoles reports whether the claims grant the requested scope. Tokens
+// with roles use the role policy; role-less client-credentials tokens may
+// authorize from their OAuth scopes. The subjectTemplate parameter selects
+// which token subjects qualify as client credentials; pass an empty string to
+// disable scope-only authorization entirely.
+func AuthorizeRoles(claims Claims, scope string, roleScopes map[string][]string, subjectTemplate string) bool {
+	if len(claims.Roles) == 0 {
+		if subjectTemplate == "" || !MatchClientCredentialsSubject(claims, subjectTemplate) {
+			return false
+		}
+		return HasScope(claims, scope)
+	}
 	for _, role := range claims.Roles {
 		if slices.Contains(roleScopes[role], scope) {
 			return true
 		}
 	}
 	return false
+}
+
+// MatchClientCredentialsSubject reports whether the token subject matches the
+// configured client-credentials template. The template must contain exactly one
+// {client_id} placeholder, which is expanded to the signed client_id claim.
+func MatchClientCredentialsSubject(claims Claims, subjectTemplate string) bool {
+	if claims.Subject == "" || subjectTemplate == "" {
+		return false
+	}
+	return claims.Subject == strings.ReplaceAll(subjectTemplate, "{client_id}", claims.ClientID)
 }
 
 func BearerToken(header string) (string, error) {

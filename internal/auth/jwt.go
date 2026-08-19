@@ -144,7 +144,7 @@ func (v *discoveredVerifier) Verify(ctx context.Context, value string) (Claims, 
 	if err != nil {
 		return Claims{}, fmt.Errorf("access token has an invalid %q claim: %w", v.roleClaim, err)
 	}
-	return Claims{Scopes: append(raw.Scopes, strings.Fields(raw.Scope)...), Roles: roles}, nil
+	return Claims{Scopes: append(raw.Scopes, strings.Fields(raw.Scope)...), Roles: roles, Subject: raw.Subject, ClientID: raw.ClientID}, nil
 }
 
 func stringSliceClaim(value json.RawMessage) ([]string, error) {

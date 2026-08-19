@@ -119,3 +119,41 @@ func TestFromEnvAllowsLoopbackHTTPDevelopmentURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFromEnvLoadsClientCredentialsSubjectTemplate(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+	t.Setenv("PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE", "client-{client_id}")
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.ClientCredentialsSubjectTemplate != "client-{client_id}" {
+		t.Fatalf("client credentials subject template = %q", cfg.Auth.ClientCredentialsSubjectTemplate)
+	}
+}
+
+func TestFromEnvDefaultClientCredentialsSubjectTemplateIsEmpty(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.ClientCredentialsSubjectTemplate != "" {
+		t.Fatalf("client credentials subject template = %q, want empty", cfg.Auth.ClientCredentialsSubjectTemplate)
+	}
+}
+
+func TestFromEnvRejectsInvalidClientCredentialsSubjectTemplate(t *testing.T) {
+	for name, value := range map[string]string{
+		"no placeholder":        "service-account",
+		"multiple placeholders": "{client_id}-{client_id}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+			t.Setenv("PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE", value)
+			if _, err := config.FromEnv(); err == nil {
+				t.Fatal("accepted invalid client credentials subject template")
+			}
+		})
+	}
+}
