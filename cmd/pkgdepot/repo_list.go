@@ -9,7 +9,7 @@ import (
 )
 
 func repoListCommand() *cli.Command {
-	return &cli.Command{Name: "list", Usage: "list local package repositories", Flags: tokenStoreFlags(), Action: repoList}
+	return &cli.Command{Name: "list", Usage: "list local package repositories", Flags: []cli.Flag{dataRootFlag()}, Action: repoList}
 }
 
 func repoList(_ context.Context, cmd *cli.Command) error {

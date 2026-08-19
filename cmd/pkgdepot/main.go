@@ -13,8 +13,9 @@ func main() {
 		Name:  "pkgdepot",
 		Usage: "manage an Arch Linux package repository",
 		Commands: []*cli.Command{
+			loginCommand(),
+			logoutCommand(),
 			serveCommand(),
-			tokenCommand(),
 			packageCommand(),
 			repoCommand(),
 		},

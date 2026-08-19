@@ -10,7 +10,7 @@ import (
 func repoCreateCommand() *cli.Command {
 	return &cli.Command{
 		Name: "create", Usage: "create a local package repository", ArgsUsage: "<repository>",
-		Flags: tokenStoreFlags(), Action: repoCreate,
+		Flags: []cli.Flag{dataRootFlag()}, Action: repoCreate,
 	}
 }
 

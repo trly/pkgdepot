@@ -17,42 +17,45 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trly/pkgdepot/internal/auth"
 	"github.com/trly/pkgdepot/internal/httpapi"
 	"github.com/trly/pkgdepot/internal/repository"
-	"github.com/trly/pkgdepot/internal/token"
 )
+
+type resourceValidator struct {
+	claims auth.Claims
+	err    error
+}
+
+func (v resourceValidator) Validate(context.Context, string) (auth.Claims, error) {
+	if v.err != nil {
+		return auth.Claims{}, v.err
+	}
+	if v.claims.Scopes == nil {
+		return auth.Claims{Scopes: []string{"package:publish"}}, nil
+	}
+	return v.claims, nil
+}
 
 type commands struct{}
 
 func (commands) Add(context.Context, string, string) error    { return nil }
 func (commands) Remove(context.Context, string, string) error { return nil }
 
-func testTokens(t *testing.T) *token.Store {
-	t.Helper()
-	store := token.New(t.TempDir())
-	if err := store.Initialize(); err != nil {
-		t.Fatal(err)
-	}
-	return store
-}
-
-func testCredential(t *testing.T, store *token.Store) string {
-	t.Helper()
-	_, credential, err := store.Create(token.CreateOptions{Name: "test", Permissions: []string{token.PermissionPublish, token.PermissionRemove}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return credential
-}
-
 func TestHealthAndAuthentication(t *testing.T) {
 	service := repository.New(t.TempDir(), commands{})
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	tokens := testTokens(t)
-	credential := testCredential(t, tokens)
-	server := httptest.NewServer(httpapi.New(service, tokens, "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
+		ResourceAuth: &auth.ResourceServer{
+			Validator: resourceValidator{},
+			Metadata: auth.ResourceMetadata{
+				Resource:               "http://localhost:8080",
+				BearerMethodsSupported: []string{"header"},
+			},
+		},
+	}))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/healthz")
@@ -76,18 +79,11 @@ func TestHealthAndAuthentication(t *testing.T) {
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status = %d", response.StatusCode)
 	}
-
-	request.Header.Set("Authorization", "secret")
-	response, err = http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("malformed authorization status = %d", response.StatusCode)
+	if !strings.HasPrefix(response.Header.Get("WWW-Authenticate"), "Bearer realm=") {
+		t.Fatalf("missing Bearer challenge, got %q", response.Header.Get("WWW-Authenticate"))
 	}
 
-	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Authorization", "Bearer valid")
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -98,29 +94,173 @@ func TestHealthAndAuthentication(t *testing.T) {
 	}
 }
 
+func TestResourceServerAuthenticationAndMetadata(t *testing.T) {
+	service := repository.New(t.TempDir(), commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{ResourceAuth: &auth.ResourceServer{
+		Validator: resourceValidator{},
+		Metadata: auth.ResourceMetadata{
+			Resource:               "http://localhost:8080",
+			AuthorizationServers:   []string{"https://issuer.example"},
+			ScopesSupported:        []string{"package:publish"},
+			BearerMethodsSupported: []string{"header"},
+		},
+	}}))
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("metadata status = %d", response.StatusCode)
+	}
+	var metadata auth.ResourceMetadata
+	if err := json.NewDecoder(response.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Resource != "http://localhost:8080" {
+		t.Fatalf("metadata resource = %q", metadata.Resource)
+	}
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/repositories/stable/x86_64/packages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || !strings.HasPrefix(response.Header.Get("WWW-Authenticate"), "Bearer realm=\"") || strings.Contains(response.Header.Get("WWW-Authenticate"), "error=") {
+		t.Fatalf("missing token = %d, challenge %q", response.StatusCode, response.Header.Get("WWW-Authenticate"))
+	}
+
+	request.Header.Set("Authorization", "Bearer token")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("authorized request = %d", response.StatusCode)
+	}
+
+	invalidTokenServer := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{ResourceAuth: &auth.ResourceServer{
+		Validator: resourceValidator{err: fmt.Errorf("invalid token")},
+	}}))
+	defer invalidTokenServer.Close()
+	request, err = http.NewRequest(http.MethodPost, invalidTokenServer.URL+"/api/v1/repositories/stable/x86_64/packages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer token")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || !strings.Contains(response.Header.Get("WWW-Authenticate"), `error="invalid_token"`) {
+		t.Fatalf("invalid token = %d, challenge %q", response.StatusCode, response.Header.Get("WWW-Authenticate"))
+	}
+
+	insufficientScopeServer := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{ResourceAuth: &auth.ResourceServer{
+		Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:remove"}}},
+	}}))
+	defer insufficientScopeServer.Close()
+	request, err = http.NewRequest(http.MethodPost, insufficientScopeServer.URL+"/api/v1/repositories/stable/x86_64/packages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer token")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	challenge := response.Header.Get("WWW-Authenticate")
+	if response.StatusCode != http.StatusForbidden || !strings.Contains(challenge, `error="insufficient_scope"`) || !strings.Contains(challenge, `scope="package:publish"`) {
+		t.Fatalf("insufficient scope = %d, challenge %q", response.StatusCode, challenge)
+	}
+	request.Header.Set("Authorization", "Bearer")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized || !strings.Contains(response.Header.Get("WWW-Authenticate"), `error="invalid_request"`) {
+		t.Fatalf("malformed token = %d, challenge %q", response.StatusCode, response.Header.Get("WWW-Authenticate"))
+	}
+}
+
+func TestCIMDMetadata(t *testing.T) {
+	service := repository.New(t.TempDir(), commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.New(service, "https://packages.example/pkgdepot")
+	request := httptest.NewRequest(http.MethodGet, "/oauth/client-metadata.json", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var metadata struct {
+		ClientID     string   `json:"client_id"`
+		RedirectURIs []string `json:"redirect_uris"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ClientID != "https://packages.example/pkgdepot/oauth/client-metadata.json" {
+		t.Fatalf("client_id = %q", metadata.ClientID)
+	}
+	if len(metadata.RedirectURIs) != 5 {
+		t.Fatalf("redirect_uris = %v", metadata.RedirectURIs)
+	}
+}
+
+func TestResourceMetadataUsesRFC9728PathForCanonicalURL(t *testing.T) {
+	service := repository.New(t.TempDir(), commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.New(service, "https://packages.example/pkgdepot", httpapi.Options{ResourceAuth: &auth.ResourceServer{
+		Validator: resourceValidator{},
+		Metadata:  auth.ResourceMetadata{Resource: "https://packages.example/pkgdepot"},
+	}})
+	request := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/pkgdepot", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("metadata status = %d", response.Code)
+	}
+}
+
 func TestMutationAuthorizationUsesPermissionAndScope(t *testing.T) {
 	service := repository.New(t.TempDir(), commands{})
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	tokens := testTokens(t)
-	_, credential, err := tokens.Create(token.CreateOptions{
-		Name:         "publisher",
-		Permissions:  []string{token.PermissionPublish},
-		Repository:   "stable",
-		Architecture: "x86_64",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(httpapi.New(service, tokens, "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
+		ResourceAuth: &auth.ResourceServer{
+			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:publish"}}},
+			Metadata: auth.ResourceMetadata{
+				Resource:               "http://localhost:8080",
+				BearerMethodsSupported: []string{"header"},
+			},
+		},
+	}))
 	defer server.Close()
 
 	request, err := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/repositories/stable/x86_64/packages/example", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Authorization", "Bearer token")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -134,14 +274,14 @@ func TestMutationAuthorizationUsesPermissionAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Authorization", "Bearer token")
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("scope status = %d, want %d", response.StatusCode, http.StatusForbidden)
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		t.Fatalf("publish status = %d, expected authorized", response.StatusCode)
 	}
 }
 
@@ -151,8 +291,6 @@ func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	tokens := testTokens(t)
-	credential := testCredential(t, tokens)
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -174,13 +312,21 @@ func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := httptest.NewServer(httpapi.New(service, tokens, "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
+		ResourceAuth: &auth.ResourceServer{
+			Validator: resourceValidator{},
+			Metadata: auth.ResourceMetadata{
+				Resource:               "http://localhost:8080",
+				BearerMethodsSupported: []string{"header"},
+			},
+		},
+	}))
 	defer server.Close()
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/repositories/stable/x86_64/packages", &body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Authorization", "Bearer valid")
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -225,7 +371,7 @@ func TestListRepositoriesIsPublic(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "stable.db.tar.gz"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/api/v1/repositories")
@@ -271,7 +417,7 @@ func TestRepositoryIndex(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "repositories", "empty"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -321,7 +467,7 @@ func TestRepositoryIndexUsesConfiguredAppName(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080", httpapi.Options{AppName: "My packages"}))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{AppName: "My packages"}))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -360,7 +506,7 @@ func TestPackageIndex(t *testing.T) {
 		}
 		writeDatabase(t, filepath.Join(directory, "stable.db.tar.gz"), target.description)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://packages.example"))
+	server := httptest.NewServer(httpapi.New(service, "http://packages.example"))
 	defer server.Close()
 
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/repositories/stable", nil)
@@ -451,7 +597,7 @@ func TestPackageIndexUsesRepositoryArchitectureForAnyPackage(t *testing.T) {
 	writeDatabase(t, filepath.Join(directory, "stable.db.tar.gz"),
 		"%FILENAME%\nuniversal-1-1-any.pkg.tar.zst\n\n%NAME%\nuniversal\n\n%VERSION%\n1-1\n\n%ARCH%\nany\n\n%DESC%\nUniversal package\n\n%CSIZE%\n42\n",
 	)
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -497,7 +643,7 @@ func TestPackageIndexFiltersAndPreservesOrder(t *testing.T) {
 	writeDatabase(t, filepath.Join(aarch64Directory, "stable.db.tar.gz"),
 		"%FILENAME%\nalpha-1-1-aarch64.pkg.tar.zst\n\n%NAME%\nalpha\n\n%VERSION%\n1-1\n\n%DESC%\nAlternate platform utility\n\n%CSIZE%\n2048\n",
 	)
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -570,7 +716,7 @@ func TestPackageLinksAndDetails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, filename+".sig"), []byte("signature"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -607,6 +753,14 @@ func TestPackageLinksAndDetails(t *testing.T) {
 			t.Errorf("package details do not contain %q", expected)
 		}
 	}
+	for _, expected := range []string{
+		`href="/repos/stable/x86_64/example%20build%231.pkg.tar.zst"`,
+		`href="/repos/stable/x86_64/example%20build%231.pkg.tar.zst.sig"`,
+	} {
+		if !strings.Contains(string(body), expected) {
+			t.Errorf("package details do not contain %q", expected)
+		}
+	}
 	if err := os.Remove(filepath.Join(directory, filename+".sig")); err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +792,7 @@ func TestPackageIndexEmptyState(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/repositories/stable")
@@ -660,7 +814,7 @@ func TestRepositoryIndexEmptyState(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/")
@@ -682,7 +836,7 @@ func TestWebAssetsAndUnknownRoutes(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	response, err := http.Get(server.URL + "/assets/pure-min.css")
@@ -712,7 +866,7 @@ func TestAPIAndDownloadErrorsDoNotRenderHTML(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(httpapi.New(service, testTokens(t), "http://localhost:8080"))
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
 	defer server.Close()
 
 	for _, path := range []string{

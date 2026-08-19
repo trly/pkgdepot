@@ -22,6 +22,6 @@ func remove(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 2 {
 		return errors.New("usage: pkgdepot package remove [options] <repository> <package-name>")
 	}
-	client := httpclient.New(cmd.String("url"), cmd.String("token"))
+	client := httpclient.New(ctx, cmd.String("url"))
 	return client.Remove(ctx, cmd.Args().First(), cmd.String("architecture"), cmd.Args().Get(1))
 }

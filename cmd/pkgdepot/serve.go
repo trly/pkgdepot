@@ -7,14 +7,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/trly/pkgdepot/internal/auth"
 	"github.com/trly/pkgdepot/internal/command"
 	"github.com/trly/pkgdepot/internal/config"
 	"github.com/trly/pkgdepot/internal/httpapi"
 	"github.com/trly/pkgdepot/internal/repository"
-	"github.com/trly/pkgdepot/internal/token"
 	"github.com/urfave/cli/v3"
 )
 
@@ -35,13 +37,13 @@ func serve(ctx context.Context, _ *cli.Command) error {
 	if err := repositories.Initialize(); err != nil {
 		return err
 	}
-	tokens := token.New(cfg.DataRoot)
-	if err := tokens.Initialize(); err != nil {
+	resourceAuth, err := resourceServer(cfg)
+	if err != nil {
 		return err
 	}
 	server := &http.Server{
 		Addr:         cfg.Address,
-		Handler:      httpapi.New(repositories, tokens, cfg.URL, httpapi.Options{AppName: cfg.AppName, MaxUploadSize: cfg.MaxUploadSize}),
+		Handler:      httpapi.New(repositories, cfg.URL, httpapi.Options{AppName: cfg.AppName, MaxUploadSize: cfg.MaxUploadSize, ResourceAuth: resourceAuth}),
 		ReadTimeout:  cfg.HTTPTimeout,
 		WriteTimeout: cfg.HTTPTimeout,
 		IdleTimeout:  cfg.HTTPTimeout,
@@ -60,4 +62,33 @@ func serve(ctx context.Context, _ *cli.Command) error {
 		return err
 	}
 	return nil
+}
+
+func resourceServer(cfg config.Config) (*auth.ResourceServer, error) {
+	resourceURL := strings.TrimRight(cfg.URL, "/")
+	audience := cfg.Auth.Audience
+	if audience == "" {
+		audience = resourceURL
+	}
+	discoveryCtx := oidc.ClientContext(context.Background(), &http.Client{Timeout: cfg.HTTPTimeout})
+	validator, err := auth.NewOIDCValidator(discoveryCtx, auth.OIDCOptions{Issuer: cfg.Auth.Issuer, Audience: audience, Algorithms: cfg.Auth.Algorithms, KeyCacheLifetime: cfg.Auth.KeyCacheLifetime})
+	if err != nil {
+		return nil, err
+	}
+	return resourceServerWithValidator(cfg, validator), nil
+}
+
+func resourceServerWithValidator(cfg config.Config, validator auth.Validator) *auth.ResourceServer {
+	return &auth.ResourceServer{
+		Validator: validator,
+		Metadata: auth.ResourceMetadata{
+			Resource:               auth.NormalizeResourceIdentifier(cfg.URL),
+			AuthorizationServers:   []string{cfg.Auth.Issuer},
+			ScopesSupported:        []string{auth.ScopePublish, auth.ScopeRemove},
+			BearerMethodsSupported: []string{"header"},
+		},
+		Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+			return auth.HasScope(claims, scope)
+		},
+	}
 }

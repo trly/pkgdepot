@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/trly/pkgdepot/internal/command"
-	"github.com/trly/pkgdepot/internal/config"
 	"github.com/trly/pkgdepot/internal/repository"
 	"github.com/urfave/cli/v3"
 )
@@ -16,13 +15,8 @@ func repoRenameCommand() *cli.Command {
 		Usage:       "rename a local package repository",
 		ArgsUsage:   "<old-repository> <new-repository>",
 		Description: "Create a renamed snapshot of a repository and its architecture databases in the local data root.",
-		Flags: []cli.Flag{&cli.StringFlag{
-			Name:    "data-root",
-			Usage:   "pkgdepot data root",
-			Value:   config.DefaultDataRoot,
-			Sources: cli.EnvVars("PKGDEPOT_DATA_ROOT"),
-		}},
-		Action: renameRepository,
+		Flags:       []cli.Flag{dataRootFlag()},
+		Action:      renameRepository,
 	}
 }
 
