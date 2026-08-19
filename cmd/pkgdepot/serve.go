@@ -71,7 +71,7 @@ func resourceServer(cfg config.Config) (*auth.ResourceServer, error) {
 		audience = resourceURL
 	}
 	discoveryCtx := oidc.ClientContext(context.Background(), &http.Client{Timeout: cfg.HTTPTimeout})
-	validator, err := auth.NewOIDCValidator(discoveryCtx, auth.OIDCOptions{Issuer: cfg.Auth.Issuer, Audience: audience, Algorithms: cfg.Auth.Algorithms, KeyCacheLifetime: cfg.Auth.KeyCacheLifetime})
+	validator, err := auth.NewOIDCValidator(discoveryCtx, auth.OIDCOptions{Issuer: cfg.Auth.Issuer, Audience: audience, Algorithms: cfg.Auth.Algorithms, KeyCacheLifetime: cfg.Auth.KeyCacheLifetime, RoleClaim: cfg.Auth.RoleClaim})
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func resourceServerWithValidator(cfg config.Config, validator auth.Validator) *a
 			BearerMethodsSupported: []string{"header"},
 		},
 		Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-			return auth.HasScope(claims, scope)
+			return auth.AuthorizeRoles(claims, scope, cfg.Auth.RoleScopes)
 		},
 	}
 }

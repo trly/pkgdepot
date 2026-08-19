@@ -22,14 +22,14 @@ func TestResourceServerDefaultsAudienceToResourceURL(t *testing.T) {
 		})
 	}))
 	defer issuer.Close()
-	resource, err := resourceServer(config.Config{URL: "https://packages.example", HTTPTimeout: time.Second, Auth: config.OIDCConfig{Issuer: issuer.URL}})
+	resource, err := resourceServer(config.Config{URL: "https://packages.example", HTTPTimeout: time.Second, Auth: config.OIDCConfig{Issuer: issuer.URL, RoleScopes: map[string][]string{"publisher": {auth.ScopePublish}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resource.Metadata.Resource != "https://packages.example" || !resource.Authorize(auth.Claims{Scopes: []string{auth.ScopePublish}}, auth.ScopePublish, "stable", "x86_64") {
-		t.Fatal("resource server did not wire direct scope authorization")
+	if resource.Metadata.Resource != "https://packages.example" || !resource.Authorize(auth.Claims{Roles: []string{"publisher"}}, auth.ScopePublish, "stable", "x86_64") {
+		t.Fatal("resource server did not wire role authorization")
 	}
-	if resource.Authorize(auth.Claims{}, auth.ScopePublish, "stable", "x86_64") {
-		t.Fatal("resource server authorized an absent scope")
+	if resource.Authorize(auth.Claims{Scopes: []string{auth.ScopePublish}}, auth.ScopePublish, "stable", "x86_64") {
+		t.Fatal("resource server authorized a scope without a role")
 	}
 }

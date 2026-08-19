@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -20,6 +21,47 @@ func TestFromEnvLoadsOIDCConfiguration(t *testing.T) {
 	}
 	if cfg.Auth.KeyCacheLifetime != config.DefaultOIDCKeyCacheLifetime {
 		t.Fatalf("key cache lifetime = %s, want %s", cfg.Auth.KeyCacheLifetime, config.DefaultOIDCKeyCacheLifetime)
+	}
+	if cfg.Auth.RoleClaim != "pkgdepot_roles" {
+		t.Fatalf("role claim = %q", cfg.Auth.RoleClaim)
+	}
+	wantRoleScopes := map[string][]string{"admin": {"package:publish", "package:remove"}, "publisher": {"package:publish"}}
+	if !reflect.DeepEqual(cfg.Auth.RoleScopes, wantRoleScopes) {
+		t.Fatalf("role scopes = %#v, want %#v", cfg.Auth.RoleScopes, wantRoleScopes)
+	}
+}
+
+func TestFromEnvLoadsRoleConfiguration(t *testing.T) {
+	t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+	t.Setenv("PKGDEPOT_ROLE_CLAIM", "pkgdepot_access")
+	t.Setenv("PKGDEPOT_ROLE_SCOPES", `{"maintainer":["package:publish","package:remove"]}`)
+	cfg, err := config.FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Auth.RoleClaim != "pkgdepot_access" {
+		t.Fatalf("role claim = %q", cfg.Auth.RoleClaim)
+	}
+	want := map[string][]string{"maintainer": {"package:publish", "package:remove"}}
+	if !reflect.DeepEqual(cfg.Auth.RoleScopes, want) {
+		t.Fatalf("role scopes = %#v, want %#v", cfg.Auth.RoleScopes, want)
+	}
+}
+
+func TestFromEnvRejectsInvalidRoleScopes(t *testing.T) {
+	for name, value := range map[string]string{
+		"invalid JSON":  `not json`,
+		"empty mapping": `{}`,
+		"empty role":    `{"":[]}`,
+		"empty scope":   `{"publisher":[""]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("PKGDEPOT_OIDC_ISSUER", "https://issuer.example")
+			t.Setenv("PKGDEPOT_ROLE_SCOPES", value)
+			if _, err := config.FromEnv(); err == nil {
+				t.Fatal("accepted invalid role scopes")
+			}
+		})
 	}
 }
 

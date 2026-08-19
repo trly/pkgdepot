@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,17 +47,18 @@ func TestOIDCValidatorDiscoversAndValidatesAccessTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid := signedToken(t, key, jwt.MapClaims{
-		"iss":       issuer.URL,
-		"aud":       "https://packages.example",
-		"exp":       time.Now().Add(time.Minute).Unix(),
-		"iat":       time.Now().Add(-time.Minute).Unix(),
-		"sub":       "user-1",
-		"client_id": "client-1",
-		"jti":       "token-1",
-		"scp":       []string{auth.ScopePublish, auth.ScopeRemove},
+		"iss":            issuer.URL,
+		"aud":            "https://packages.example",
+		"exp":            time.Now().Add(time.Minute).Unix(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"sub":            "user-1",
+		"client_id":      "client-1",
+		"jti":            "token-1",
+		"scp":            []string{auth.ScopePublish, auth.ScopeRemove},
+		"pkgdepot_roles": []string{"admin"},
 	}, "at+jwt")
 	claims, err := validator.Validate(context.Background(), valid)
-	if err != nil || !auth.HasScope(claims, auth.ScopePublish) || !auth.HasScope(claims, auth.ScopeRemove) {
+	if err != nil || !auth.HasScope(claims, auth.ScopePublish) || !auth.HasScope(claims, auth.ScopeRemove) || len(claims.Roles) != 1 || claims.Roles[0] != "admin" {
 		t.Fatalf("Validate = %#v, %v", claims, err)
 	}
 	standardScope := jwt.MapClaims{
@@ -129,6 +131,39 @@ func TestOIDCValidatorDiscoversAndValidatesAccessTokens(t *testing.T) {
 		})
 	}
 
+}
+
+func TestOIDCValidatorExtractsConfiguredRoleClaim(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issuer *httptest.Server
+	issuer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer.URL, "jwks_uri": issuer.URL + "/keys"})
+		case "/keys":
+			_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "kid": "key", "n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": "AQAB"}}})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer issuer.Close()
+
+	validator, err := auth.NewOIDCValidator(context.Background(), auth.OIDCOptions{Issuer: issuer.URL, Audience: "https://packages.example", RoleClaim: "pkgdepot_access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := validAccessTokenClaims(issuer.URL)
+	claims["pkgdepot_access"] = []string{"publisher", "admin"}
+	result, err := validator.Validate(context.Background(), signedToken(t, key, claims, "at+jwt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result.Roles, []string{"publisher", "admin"}; !slices.Equal(got, want) {
+		t.Fatalf("roles = %#v, want %#v", got, want)
+	}
 }
 
 func TestOIDCValidatorRejectsIncompatibleProviderMetadata(t *testing.T) {
