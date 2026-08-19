@@ -18,7 +18,8 @@ type oidcVerifier interface {
 }
 
 type discoveredVerifier struct {
-	verifier *oidc.IDTokenVerifier
+	verifier  *oidc.IDTokenVerifier
+	roleClaim string
 }
 
 const defaultKeyCacheLifetime = 15 * time.Minute
@@ -99,11 +100,15 @@ func newOIDCVerifier(ctx context.Context, options OIDCOptions) (*discoveredVerif
 	if len(algorithms) == 0 {
 		algorithms = []string{"RS256"}
 	}
+	roleClaim := options.RoleClaim
+	if roleClaim == "" {
+		roleClaim = DefaultRoleClaim
+	}
 	keySet := newExpiringKeySet(ctx, metadata.JWKSURL, options.KeyCacheLifetime)
 	return &discoveredVerifier{verifier: oidc.NewVerifier(options.Issuer, keySet, &oidc.Config{
 		ClientID:             options.Audience,
 		SupportedSigningAlgs: algorithms,
-	})}, nil
+	}), roleClaim: roleClaim}, nil
 }
 
 func (v *discoveredVerifier) Verify(ctx context.Context, value string) (Claims, error) {
@@ -131,7 +136,26 @@ func (v *discoveredVerifier) Verify(ctx context.Context, value string) (Claims, 
 	if issuedAt, err := raw.IssuedAt.Int64(); err != nil || issuedAt <= 0 {
 		return Claims{}, fmt.Errorf("access token has an invalid iat claim")
 	}
-	return Claims{Scopes: append(raw.Scopes, strings.Fields(raw.Scope)...)}, nil
+	var allClaims map[string]json.RawMessage
+	if err := token.Claims(&allClaims); err != nil {
+		return Claims{}, err
+	}
+	roles, err := stringSliceClaim(allClaims[v.roleClaim])
+	if err != nil {
+		return Claims{}, fmt.Errorf("access token has an invalid %q claim: %w", v.roleClaim, err)
+	}
+	return Claims{Scopes: append(raw.Scopes, strings.Fields(raw.Scope)...), Roles: roles}, nil
+}
+
+func stringSliceClaim(value json.RawMessage) ([]string, error) {
+	if len(value) == 0 || string(value) == "null" {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal(value, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 func validateAccessTokenHeader(value string) error {

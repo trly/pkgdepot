@@ -29,3 +29,28 @@ func TestHasScope(t *testing.T) {
 		t.Fatal("undeclared scope was authorized")
 	}
 }
+
+func TestAuthorizeRoles(t *testing.T) {
+	roleScopes := map[string][]string{
+		"admin":     {auth.ScopePublish, auth.ScopeRemove},
+		"publisher": {auth.ScopePublish},
+		"viewer":    {},
+	}
+	for name, test := range map[string]struct {
+		roles []string
+		scope string
+		want  bool
+	}{
+		"role grants scope":            {roles: []string{"publisher"}, scope: auth.ScopePublish, want: true},
+		"role lacks scope":             {roles: []string{"publisher"}, scope: auth.ScopeRemove},
+		"one of multiple roles grants": {roles: []string{"viewer", "admin"}, scope: auth.ScopeRemove, want: true},
+		"unknown role":                 {roles: []string{"unknown"}, scope: auth.ScopePublish},
+		"no roles":                     {scope: auth.ScopePublish},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := auth.AuthorizeRoles(auth.Claims{Roles: test.roles}, test.scope, roleScopes); got != test.want {
+				t.Fatalf("AuthorizeRoles() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}

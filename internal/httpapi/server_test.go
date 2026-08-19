@@ -31,8 +31,8 @@ func (v resourceValidator) Validate(context.Context, string) (auth.Claims, error
 	if v.err != nil {
 		return auth.Claims{}, v.err
 	}
-	if v.claims.Scopes == nil {
-		return auth.Claims{Scopes: []string{"package:publish"}}, nil
+	if v.claims.Scopes == nil && v.claims.Roles == nil {
+		return auth.Claims{Scopes: []string{"package:publish"}, Roles: []string{"publisher"}}, nil
 	}
 	return v.claims, nil
 }
@@ -50,6 +50,9 @@ func TestHealthAndAuthentication(t *testing.T) {
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{},
+			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}})
+			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
 				BearerMethodsSupported: []string{"header"},
@@ -101,6 +104,9 @@ func TestResourceServerAuthenticationAndMetadata(t *testing.T) {
 	}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{ResourceAuth: &auth.ResourceServer{
 		Validator: resourceValidator{},
+		Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+			return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}})
+		},
 		Metadata: auth.ResourceMetadata{
 			Resource:               "http://localhost:8080",
 			AuthorizationServers:   []string{"https://issuer.example"},
@@ -240,14 +246,18 @@ func TestResourceMetadataUsesRFC9728PathForCanonicalURL(t *testing.T) {
 	}
 }
 
-func TestMutationAuthorizationUsesPermissionAndScope(t *testing.T) {
+func TestMutationAuthorizationRequiresRoleMapping(t *testing.T) {
 	service := repository.New(t.TempDir(), commands{})
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
+	roleScopes := map[string][]string{"publisher": {auth.ScopePublish}}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
-			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:publish"}}},
+			Validator: resourceValidator{claims: auth.Claims{Roles: []string{"publisher"}}},
+			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+				return auth.AuthorizeRoles(claims, scope, roleScopes)
+			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
 				BearerMethodsSupported: []string{"header"},
@@ -285,6 +295,41 @@ func TestMutationAuthorizationUsesPermissionAndScope(t *testing.T) {
 	}
 }
 
+func TestMutationAuthorizationDeniesScopeWithoutRole(t *testing.T) {
+	service := repository.New(t.TempDir(), commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	roleScopes := map[string][]string{"publisher": {auth.ScopePublish}}
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
+		ResourceAuth: &auth.ResourceServer{
+			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:publish"}}},
+			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+				return auth.AuthorizeRoles(claims, scope, roleScopes)
+			},
+			Metadata: auth.ResourceMetadata{
+				Resource:               "http://localhost:8080",
+				BearerMethodsSupported: []string{"header"},
+			},
+		},
+	}))
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/repositories/testing/x86_64/packages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer token")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("scope-only status = %d, want %d", response.StatusCode, http.StatusForbidden)
+	}
+}
+
 func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
 	root := t.TempDir()
 	service := repository.New(root, commands{})
@@ -315,6 +360,9 @@ func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{},
+			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}})
+			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
 				BearerMethodsSupported: []string{"header"},

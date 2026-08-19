@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trly/pkgdepot/internal/auth"
 	"github.com/trly/pkgdepot/internal/urlpolicy"
 )
 
@@ -36,6 +38,8 @@ type OIDCConfig struct {
 	Audience         string
 	Algorithms       []string
 	KeyCacheLifetime time.Duration
+	RoleClaim        string
+	RoleScopes       map[string][]string
 }
 
 func FromEnv() (Config, error) {
@@ -46,10 +50,24 @@ func FromEnv() (Config, error) {
 		URL:           valueOrDefault("PKGDEPOT_URL", defaultURL),
 		MaxUploadSize: DefaultMaxUploadSize,
 		HTTPTimeout:   DefaultHTTPTimeout,
-		Auth:          OIDCConfig{KeyCacheLifetime: DefaultOIDCKeyCacheLifetime},
+		Auth: OIDCConfig{
+			KeyCacheLifetime: DefaultOIDCKeyCacheLifetime,
+			RoleClaim:        auth.DefaultRoleClaim,
+			RoleScopes:       auth.DefaultRoleScopes(),
+		},
 	}
 	cfg.Auth.Issuer = os.Getenv("PKGDEPOT_OIDC_ISSUER")
 	cfg.Auth.Audience = os.Getenv("PKGDEPOT_OIDC_AUDIENCE")
+	if roleClaim := os.Getenv("PKGDEPOT_ROLE_CLAIM"); roleClaim != "" {
+		cfg.Auth.RoleClaim = roleClaim
+	}
+	if roleScopes := os.Getenv("PKGDEPOT_ROLE_SCOPES"); roleScopes != "" {
+		var configuredRoleScopes map[string][]string
+		if err := json.Unmarshal([]byte(roleScopes), &configuredRoleScopes); err != nil {
+			return Config{}, fmt.Errorf("PKGDEPOT_ROLE_SCOPES must be a JSON object mapping roles to scopes: %w", err)
+		}
+		cfg.Auth.RoleScopes = configuredRoleScopes
+	}
 	if algorithms := os.Getenv("PKGDEPOT_OIDC_JWT_ALGORITHMS"); algorithms != "" {
 		cfg.Auth.Algorithms = strings.FieldsFunc(algorithms, func(r rune) bool { return r == ',' || r == ' ' })
 	}
@@ -75,6 +93,22 @@ func FromEnv() (Config, error) {
 func validateOIDCConfig(cfg OIDCConfig) error {
 	if strings.TrimSpace(cfg.Issuer) == "" {
 		return errors.New("PKGDEPOT_OIDC_ISSUER is required")
+	}
+	if strings.TrimSpace(cfg.RoleClaim) == "" {
+		return errors.New("PKGDEPOT_ROLE_CLAIM must not be empty")
+	}
+	if len(cfg.RoleScopes) == 0 {
+		return errors.New("PKGDEPOT_ROLE_SCOPES must define at least one role")
+	}
+	for role, scopes := range cfg.RoleScopes {
+		if strings.TrimSpace(role) == "" {
+			return errors.New("PKGDEPOT_ROLE_SCOPES must not contain an empty role")
+		}
+		for _, scope := range scopes {
+			if strings.TrimSpace(scope) == "" {
+				return fmt.Errorf("PKGDEPOT_ROLE_SCOPES role %q contains an empty scope", role)
+			}
+		}
 	}
 	return urlpolicy.Validate(cfg.Issuer, "PKGDEPOT_OIDC_ISSUER")
 }

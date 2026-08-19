@@ -316,12 +316,7 @@ func (s *Server) authenticateResource(w http.ResponseWriter, r *http.Request, pe
 		writeBearerError(w, http.StatusUnauthorized, "invalid_token", "the access token is invalid", "", s.resourceRealm(), s.metadataURL())
 		return
 	}
-	authorized := false
-	if s.resourceAuth.Authorize != nil {
-		authorized = s.resourceAuth.Authorize(claims, permission, r.PathValue("repository"), r.PathValue("architecture"))
-	} else {
-		authorized = auth.HasScope(claims, permission)
-	}
+	authorized := s.resourceAuth.Authorize != nil && s.resourceAuth.Authorize(claims, permission, r.PathValue("repository"), r.PathValue("architecture"))
 	if !authorized {
 		writeBearerError(w, http.StatusForbidden, "insufficient_scope", "the token does not grant this operation", permission, s.resourceRealm(), s.metadataURL())
 		return
