@@ -2,5 +2,26 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["(^|/)go\\.mod$"],
+      "matchStrings": ["^go\\s+(?<currentValue>\\d+\\.\\d+\\.?\\d*)"],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "golang",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+\\.?\\d*)"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "matchPackagePatterns": ["archlinux"],
+      "schedule": ["on the first day of the month"]
+    },
+    {
+      "matchDatasources": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
   ]
 }
