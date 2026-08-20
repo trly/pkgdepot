@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -216,7 +217,11 @@ func (s *Service) Remove(ctx context.Context, repository, architecture, packageN
 	if err := s.commands.Remove(ctx, s.databasePath(repository, architecture), packageName); err != nil {
 		return fmt.Errorf("update repository database: %w", err)
 	}
-	packagePath := filepath.Join(s.repositoryDirectory(repository, architecture), packages[index].Filename)
+	repositoryDir := s.repositoryDirectory(repository, architecture)
+	packagePath := filepath.Join(repositoryDir, packages[index].Filename)
+	if resolved, err := filepath.Abs(packagePath); err != nil || !strings.HasPrefix(resolved, filepath.Clean(repositoryDir)+string(os.PathSeparator)) {
+		return fmt.Errorf("package filename %q escapes repository directory", packages[index].Filename)
+	}
 	if err := os.Remove(packagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove package file: %w", err)
 	}
