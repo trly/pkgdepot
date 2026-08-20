@@ -88,7 +88,7 @@ func resourceServerWithValidator(cfg config.Config, validator auth.Validator) *a
 			BearerMethodsSupported: []string{"header"},
 		},
 		Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-			return auth.AuthorizeRoles(claims, scope, cfg.Auth.RoleScopes)
+			return auth.AuthorizeRoles(claims, scope, cfg.Auth.RoleScopes, cfg.Auth.ClientCredentialsSubjectTemplate)
 		},
 	}
 }

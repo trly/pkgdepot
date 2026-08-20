@@ -34,12 +34,13 @@ type Config struct {
 }
 
 type OIDCConfig struct {
-	Issuer           string
-	Audience         string
-	Algorithms       []string
-	KeyCacheLifetime time.Duration
-	RoleClaim        string
-	RoleScopes       map[string][]string
+	Issuer                           string
+	Audience                         string
+	Algorithms                       []string
+	KeyCacheLifetime                 time.Duration
+	RoleClaim                        string
+	RoleScopes                       map[string][]string
+	ClientCredentialsSubjectTemplate string
 }
 
 func FromEnv() (Config, error) {
@@ -70,6 +71,9 @@ func FromEnv() (Config, error) {
 	}
 	if algorithms := os.Getenv("PKGDEPOT_OIDC_JWT_ALGORITHMS"); algorithms != "" {
 		cfg.Auth.Algorithms = strings.FieldsFunc(algorithms, func(r rune) bool { return r == ',' || r == ' ' })
+	}
+	if template := os.Getenv("PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE"); template != "" {
+		cfg.Auth.ClientCredentialsSubjectTemplate = template
 	}
 	if err := validateURL(cfg.URL); err != nil {
 		return Config{}, err
@@ -108,6 +112,11 @@ func validateOIDCConfig(cfg OIDCConfig) error {
 			if strings.TrimSpace(scope) == "" {
 				return fmt.Errorf("PKGDEPOT_ROLE_SCOPES role %q contains an empty scope", role)
 			}
+		}
+	}
+	if cfg.ClientCredentialsSubjectTemplate != "" {
+		if strings.Count(cfg.ClientCredentialsSubjectTemplate, "{client_id}") != 1 {
+			return errors.New("PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE must contain exactly one {client_id} placeholder")
 		}
 	}
 	return urlpolicy.Validate(cfg.Issuer, "PKGDEPOT_OIDC_ISSUER")

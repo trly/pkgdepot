@@ -17,7 +17,7 @@
 
 ## OAuth and OIDC
 
-- The server is an OAuth 2.0 protected resource. Signed JWT access tokens must carry roles in a configurable claim (`pkgdepot_roles` by default). Authorization is determined solely by mapping those roles to permitted scopes through `PKGDEPOT_ROLE_SCOPES`. Provider-issued `scp`/`scope` claims are parsed but not used for authorization.
+- The server is an OAuth 2.0 protected resource. Signed JWT access tokens must carry roles in a configurable claim (`pkgdepot_roles` by default). Authorization is determined by mapping those roles to permitted scopes through `PKGDEPOT_ROLE_SCOPES`. Client credentials tokens can alternatively authorize from their OAuth `scope`/`scp` claims when `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` is configured for the provider's subject format.
 - The CLI discovers its provider through RFC 9728 protected-resource metadata, then requires standard OpenID Connect discovery metadata for the selected issuer. Generic RFC 8414-only providers and direct endpoint overrides are not supported.
 - Keep OAuth protocol mechanics in `golang.org/x/oauth2` and OIDC discovery/token validation in `github.com/coreos/go-oidc/v3/oidc`. Use client credentials when a client secret is configured and authorization code with PKCE otherwise.
 - Use `oauth2.TokenSource` and `oauth2.Transport` for token acquisition, refresh, caching, concurrency control, and bearer headers. The CLI's loopback callback tries ports 8085-8089 and uses the first available one.

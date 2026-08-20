@@ -51,7 +51,7 @@ func TestHealthAndAuthentication(t *testing.T) {
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}})
+				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}}, "")
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
@@ -105,7 +105,7 @@ func TestResourceServerAuthenticationAndMetadata(t *testing.T) {
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{ResourceAuth: &auth.ResourceServer{
 		Validator: resourceValidator{},
 		Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-			return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}})
+			return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}}, "")
 		},
 		Metadata: auth.ResourceMetadata{
 			Resource:               "http://localhost:8080",
@@ -256,7 +256,7 @@ func TestMutationAuthorizationRequiresRoleMapping(t *testing.T) {
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{claims: auth.Claims{Roles: []string{"publisher"}}},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, roleScopes)
+				return auth.AuthorizeRoles(claims, scope, roleScopes, "")
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
@@ -295,7 +295,7 @@ func TestMutationAuthorizationRequiresRoleMapping(t *testing.T) {
 	}
 }
 
-func TestMutationAuthorizationDeniesScopeWithoutRole(t *testing.T) {
+func TestMutationAuthorizationAllowsClientCredentialsScope(t *testing.T) {
 	service := repository.New(t.TempDir(), commands{})
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
@@ -303,9 +303,9 @@ func TestMutationAuthorizationDeniesScopeWithoutRole(t *testing.T) {
 	roleScopes := map[string][]string{"publisher": {auth.ScopePublish}}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
-			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:publish"}}},
+			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:publish"}, Subject: "client-app", ClientID: "app"}},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, roleScopes)
+				return auth.AuthorizeRoles(claims, scope, roleScopes, "client-{client_id}")
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
@@ -325,8 +325,8 @@ func TestMutationAuthorizationDeniesScopeWithoutRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("scope-only status = %d, want %d", response.StatusCode, http.StatusForbidden)
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		t.Fatalf("scope-only status = %d, expected authorized", response.StatusCode)
 	}
 }
 
@@ -361,7 +361,7 @@ func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}})
+				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}}, "")
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
