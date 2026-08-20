@@ -3,7 +3,7 @@ module github.com/trly/pkgdepot
 go 1.26.0
 
 require (
-	github.com/klauspost/compress v1.19.1
+	github.com/klauspost/compress v1.19.2
 	github.com/ulikunitz/xz v0.5.16
 )
 
