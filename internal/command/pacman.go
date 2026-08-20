@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strings"
 )
 
 type RepositoryCommands interface {
@@ -30,13 +29,10 @@ func (p Pacman) Remove(ctx context.Context, database, packageName string) error 
 }
 
 func run(ctx context.Context, executable string, arguments ...string) error {
-	output, err := exec.CommandContext(ctx, executable, arguments...).CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return fmt.Errorf("%s: %s", executable, message)
+	cmd := exec.CommandContext(ctx, executable, arguments...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		_ = output
+		return fmt.Errorf("%s failed: %w", executable, err)
 	}
 	return nil
 }
