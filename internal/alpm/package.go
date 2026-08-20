@@ -27,6 +27,7 @@ type Package struct {
 const (
 	packageDecoderMaxMemory = 64 << 20
 	packageDecoderMaxWindow = 64 << 20
+	packageDecoderMaxOutput = 64 << 20
 )
 
 func ParsePackageInfo(r io.Reader) (Package, error) {
@@ -104,6 +105,24 @@ func InspectPackage(path string) (Package, error) {
 	}
 }
 
+type limitedReader struct {
+	r     io.Reader
+	left  int64
+	error error
+}
+
+func (lr *limitedReader) Read(p []byte) (int, error) {
+	if lr.left <= 0 {
+		return 0, lr.error
+	}
+	if int64(len(p)) > lr.left {
+		p = p[:lr.left]
+	}
+	n, err := lr.r.Read(p)
+	lr.left -= int64(n)
+	return n, err
+}
+
 func compressedReader(r *os.File) (io.Reader, func(), error) {
 	header := make([]byte, 6)
 	n, err := io.ReadFull(r, header)
@@ -121,15 +140,18 @@ func compressedReader(r *os.File) (io.Reader, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("open gzip package: %w", err)
 		}
-		return reader, func() { _ = reader.Close() }, nil
+		lr := &limitedReader{r: reader, left: packageDecoderMaxOutput, error: fmt.Errorf("gzip decompression exceeded %d byte limit", packageDecoderMaxOutput)}
+		return lr, func() { _ = reader.Close() }, nil
 	case len(header) >= 3 && string(header[:3]) == "BZh":
-		return bzip2.NewReader(r), nil, nil
+		lr := &limitedReader{r: bzip2.NewReader(r), left: packageDecoderMaxOutput, error: fmt.Errorf("bzip2 decompression exceeded %d byte limit", packageDecoderMaxOutput)}
+		return lr, nil, nil
 	case len(header) >= 6 && string(header[:6]) == "\xfd7zXZ\x00":
-		reader, err := xz.NewReader(r)
+		reader, err := xz.ReaderConfig{DictCap: packageDecoderMaxWindow, SingleStream: true}.NewReader(r)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open xz package: %w", err)
 		}
-		return reader, nil, nil
+		lr := &limitedReader{r: reader, left: packageDecoderMaxOutput, error: fmt.Errorf("xz decompression exceeded %d byte limit", packageDecoderMaxOutput)}
+		return lr, nil, nil
 	case len(header) >= 4 && header[0] == 0x28 && header[1] == 0xb5 && header[2] == 0x2f && header[3] == 0xfd:
 		reader, err := zstd.NewReader(r,
 			zstd.WithDecoderConcurrency(1),
