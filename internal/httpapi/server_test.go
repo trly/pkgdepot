@@ -254,7 +254,7 @@ func TestMutationAuthorizationRequiresRoleMapping(t *testing.T) {
 	roleScopes := map[string][]string{"publisher": {auth.ScopePublish}}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
-			Validator: resourceValidator{claims: auth.Claims{Roles: []string{"publisher"}}},
+			Validator: resourceValidator{claims: auth.Claims{Roles: []string{"publisher"}, Scopes: []string{auth.ScopePublish}}},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
 				return auth.AuthorizeRoles(claims, scope, roleScopes, "")
 			},

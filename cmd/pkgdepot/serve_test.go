@@ -26,7 +26,7 @@ func TestResourceServerDefaultsAudienceToResourceURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resource.Metadata.Resource != "https://packages.example" || !resource.Authorize(auth.Claims{Roles: []string{"publisher"}}, auth.ScopePublish, "stable", "x86_64") {
+	if resource.Metadata.Resource != "https://packages.example" || !resource.Authorize(auth.Claims{Roles: []string{"publisher"}, Scopes: []string{auth.ScopePublish}}, auth.ScopePublish, "stable", "x86_64") {
 		t.Fatal("resource server did not wire role authorization")
 	}
 	if !resource.Authorize(auth.Claims{Scopes: []string{auth.ScopePublish}, Subject: "app", ClientID: "app"}, auth.ScopePublish, "stable", "x86_64") {

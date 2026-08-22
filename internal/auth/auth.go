@@ -77,17 +77,19 @@ func HasScope(claims Claims, scope string) bool {
 	return slices.Contains(claims.Scopes, scope)
 }
 
-// AuthorizeRoles reports whether the claims grant the requested scope. Tokens
-// with roles use the role policy; role-less client-credentials tokens may
-// authorize from their OAuth scopes. The subjectTemplate parameter selects
-// which token subjects qualify as client credentials; pass an empty string to
-// disable scope-only authorization entirely.
+// AuthorizeRoles reports whether the claims grant the requested scope. User
+// tokens must have both the OAuth scope and a role that permits it. Role-less
+// client-credentials tokens may authorize from their OAuth scopes when their
+// subject matches subjectTemplate.
 func AuthorizeRoles(claims Claims, scope string, roleScopes map[string][]string, subjectTemplate string) bool {
 	if len(claims.Roles) == 0 {
 		if subjectTemplate == "" || !MatchClientCredentialsSubject(claims, subjectTemplate) {
 			return false
 		}
 		return HasScope(claims, scope)
+	}
+	if !HasScope(claims, scope) {
+		return false
 	}
 	for _, role := range claims.Roles {
 		if slices.Contains(roleScopes[role], scope) {

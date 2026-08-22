@@ -255,6 +255,15 @@ and resource, receives the local callback, and exchanges its authorization code
 using PKCE. Tokens are kept in the keyring and refreshed when the provider
 supplies a refresh token.
 
+For explicit user login, `pkgdepot login` first authenticates with `openid`,
+`profile`, and `email`. The local callback displays the verified OIDC identity,
+including the provider's profile photo when available, and lets the user select
+from the scopes advertised by pkgdepot. A second authorization request then
+obtains the selected API token. The identity provider and pkgdepot server may
+both further restrict the resulting permissions. If a cached delegated token
+does not contain a required operation scope, the CLI asks the user to run
+`pkgdepot login` again rather than silently requesting additional access.
+
 ```sh
 PKGDEPOT_URL=https://packages.example.com \
 pkgdepot package remove stable example
