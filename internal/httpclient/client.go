@@ -128,16 +128,17 @@ func (c *Client) Login(ctx context.Context, scopes []string) (*oauth2.Token, err
 	}
 	identityConfig := oauth2.Config{ClientID: c.clientID, Endpoint: c.endpoint, Scopes: []string{"openid", "profile", "email"}}
 	identity, err := c.authorizeCode(ctx, identityConfig, "")
-	if err == nil {
-		if user, verifyErr := c.identity(identity.token, identity.nonce); verifyErr == nil {
-			selected, selectErr := c.selectScopes(ctx, user, scopes)
-			if selectErr != nil {
-				return nil, selectErr
-			}
-			scopes = selected
-		} else if !strings.Contains(verifyErr.Error(), "did not return an OIDC ID token") {
-			return nil, verifyErr
+	if err != nil {
+		return nil, err
+	}
+	if user, verifyErr := c.identity(identity.token, identity.nonce); verifyErr == nil {
+		selected, selectErr := c.selectScopes(ctx, user, scopes)
+		if selectErr != nil {
+			return nil, selectErr
 		}
+		scopes = selected
+	} else if !strings.Contains(verifyErr.Error(), "did not return an OIDC ID token") {
+		return nil, verifyErr
 	}
 	if len(scopes) == 0 {
 		return nil, errors.New("at least one OAuth scope must be selected")

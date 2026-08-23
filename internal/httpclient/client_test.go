@@ -767,6 +767,23 @@ func TestAuthorizationCodeFailsWhenAllLoopbackPortsOccupied(t *testing.T) {
 	}
 }
 
+func TestLoginPropagatesIdentityAuthorizationError(t *testing.T) {
+	server := oauthServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := httpclient.New(context.Background(), server.URL)
+	client.OAuth.ClientID = "public-client"
+
+	_, err := client.Login(ctx, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Login() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestLoginCachesGrantedScopesNotRequestedScopes(t *testing.T) {
 	backend := &memoryTokenBackend{values: make(map[string]string)}
 	server := oauthServer(t, func(w http.ResponseWriter, r *http.Request) {
