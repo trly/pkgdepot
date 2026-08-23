@@ -54,6 +54,15 @@ func TestSelectScopesRejectsMissingCSRFToken(t *testing.T) {
 			t.Fatalf("scope page status = %d", response.StatusCode)
 		}
 
+		invalidPage, err := http.Get(parsed.Scheme + "://" + parsed.Host + parsed.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = invalidPage.Body.Close()
+		if invalidPage.StatusCode != http.StatusNotFound {
+			t.Fatalf("scope page without token status = %d", invalidPage.StatusCode)
+		}
+
 		response, err = http.PostForm(pageURL, url.Values{"scope": {"package:publish"}})
 		if err != nil {
 			t.Fatal(err)

@@ -3,6 +3,7 @@ package httpclient
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,5 +46,15 @@ func TestAuthorizationCodeTokenSourceDoesNotHoldMutexWhileAuthorizing(t *testing
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Token() did not stop after cancellation")
+	}
+}
+
+func TestOAuthCallbackErrorIsBoundedAndSanitized(t *testing.T) {
+	err := oauthCallbackError("access_denied", "line one\n"+string(make([]byte, 600)))
+	if len(err.Error()) > 600 {
+		t.Fatalf("callback error length = %d, want bounded", len(err.Error()))
+	}
+	if strings.ContainsAny(err.Error(), "\r\n") {
+		t.Fatalf("callback error contains control characters: %q", err)
 	}
 }
