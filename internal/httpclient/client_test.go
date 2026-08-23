@@ -582,6 +582,29 @@ func TestListDoesNotDiscoverOAuth(t *testing.T) {
 	}
 }
 
+func TestListFetchesBoundedPages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "100" {
+			t.Fatalf("limit = %q", r.URL.Query().Get("limit"))
+		}
+		if r.URL.Query().Get("cursor") == "0" {
+			writeJSON(w, `[ {"name":"first"} ]`)
+			return
+		}
+		t.Fatal("unexpected second page request")
+	}))
+	defer server.Close()
+
+	client := httpclient.New(context.Background(), server.URL)
+	packages, err := client.List(context.Background(), "stable", "x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 || packages[0].Name != "first" {
+		t.Fatalf("packages = %#v", packages)
+	}
+}
+
 func TestPublishReportsEarlyServerResponse(t *testing.T) {
 	packagePath := t.TempDir() + "/example.pkg.tar.zst"
 	if err := os.WriteFile(packagePath, make([]byte, 1<<20), 0o600); err != nil {

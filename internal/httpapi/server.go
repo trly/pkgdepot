@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/trly/pkgdepot/internal/alpm"
@@ -418,7 +419,26 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
-	packages, err := s.repositories.List(r.PathValue("repository"), r.PathValue("architecture"))
+	const maxPageSize = 100
+	limit := maxPageSize
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > maxPageSize {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "cursor must be a non-negative integer")
+			return
+		}
+		offset = parsed
+	}
+	packages, err := s.repositories.ListPage(r.PathValue("repository"), r.PathValue("architecture"), offset, limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

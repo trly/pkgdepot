@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -281,19 +282,30 @@ func (c *Client) Publish(ctx context.Context, repository, architecture, packageP
 }
 
 func (c *Client) List(ctx context.Context, repository, architecture string) ([]api.Package, error) {
-	endpoint, err := c.packagesURL(repository, architecture)
-	if err != nil {
-		return nil, err
+	const pageSize = 100
+	var all []api.Package
+	for offset := 0; ; offset += pageSize {
+		endpoint, err := c.packagesURL(repository, architecture)
+		if err != nil {
+			return nil, err
+		}
+		query := endpoint.Query()
+		query.Set("limit", strconv.Itoa(pageSize))
+		query.Set("cursor", strconv.Itoa(offset))
+		endpoint.RawQuery = query.Encode()
+		request, err := c.request(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		var page []api.Package
+		if err := c.do(c.HTTP, request, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < pageSize {
+			return all, nil
+		}
 	}
-	request, err := c.request(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	var packages []api.Package
-	if err := c.do(c.HTTP, request, &packages); err != nil {
-		return nil, err
-	}
-	return packages, nil
 }
 
 func (c *Client) Repositories(ctx context.Context) ([]api.Repository, error) {

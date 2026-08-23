@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -24,6 +25,13 @@ func TestParsePackageInfo(t *testing.T) {
 	}
 	if len(pkg.Depends) != 2 || pkg.Depends[1] != "curl" {
 		t.Fatalf("unexpected dependencies: %#v", pkg.Depends)
+	}
+}
+
+func TestParsePackageInfoRejectsTooManyDependencies(t *testing.T) {
+	metadata := "pkgname = example\npkgver = 1\narch = x86_64\n" + strings.Repeat("depend = a\n", 257)
+	if _, err := alpm.ParsePackageInfo(strings.NewReader(metadata)); err == nil {
+		t.Fatal("accepted too many dependencies")
 	}
 }
 
@@ -100,5 +108,45 @@ func TestInspectRejectsZstdWindowAboveLimit(t *testing.T) {
 
 	if _, err := alpm.InspectPackage(packagePath); err == nil {
 		t.Fatal("expected oversized zstd window to be rejected")
+	}
+}
+
+func TestInspectRejectsZstdOutputAboveLimit(t *testing.T) {
+	packagePath := filepath.Join(t.TempDir(), "example-1.2.3-1-x86_64.pkg.tar.zst")
+	file, err := os.Create(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressor, err := zstd.NewWriter(file, zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := tar.NewWriter(compressor)
+	payload := make([]byte, 65<<20)
+	if err := archive.WriteHeader(&tar.Header{Name: "payload", Mode: 0o644, Size: int64(len(payload))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	metadata := []byte("pkgname = example\npkgver = 1.2.3-1\narch = x86_64\n")
+	if err := archive.WriteHeader(&tar.Header{Name: ".PKGINFO", Mode: 0o644, Size: int64(len(metadata))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write(metadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := alpm.InspectPackage(packagePath); err == nil || !strings.Contains(err.Error(), "zstd decompression exceeded") {
+		t.Fatalf("InspectPackage() error = %v, want zstd output limit", err)
 	}
 }

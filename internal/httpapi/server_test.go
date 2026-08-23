@@ -520,6 +520,35 @@ func TestListRepositoriesIsPublic(t *testing.T) {
 	}
 }
 
+func TestPackageListHonorsBoundedPage(t *testing.T) {
+	root := t.TempDir()
+	service := repository.New(root, commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "repositories", "stable", "x86_64")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	description := "%NAME%\nexample\n\n%VERSION%\n1-1\n"
+	writeDatabase(t, filepath.Join(directory, "stable.db.tar.gz"), description)
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080"))
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/api/v1/repositories/stable/x86_64/packages?limit=1&cursor=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var packages []map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&packages); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || len(packages) != 1 {
+		t.Fatalf("status = %d, packages = %#v", response.StatusCode, packages)
+	}
+}
+
 func TestRepositoryIndex(t *testing.T) {
 	root := t.TempDir()
 	service := repository.New(root, commands{})

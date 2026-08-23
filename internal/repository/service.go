@@ -155,7 +155,7 @@ func (s *Service) PublishUpload(ctx context.Context, repository, architecture st
 	}
 	defer unlock()
 
-	pkg, err := alpm.InspectPackage(upload.packagePath)
+	pkg, err := alpm.InspectPackageContext(ctx, upload.packagePath)
 	if err != nil {
 		return alpm.Package{}, err
 	}
@@ -240,6 +240,21 @@ func (s *Service) List(repository, architecture string) ([]alpm.Package, error) 
 		return nil, err
 	}
 	return alpm.ReadDatabase(s.databasePath(repository, architecture))
+}
+
+func (s *Service) ListPage(repository, architecture string, offset, limit int) ([]alpm.Package, error) {
+	packages, err := s.List(repository, architecture)
+	if err != nil {
+		return nil, err
+	}
+	if offset >= len(packages) {
+		return []alpm.Package{}, nil
+	}
+	end := offset + limit
+	if end > len(packages) {
+		end = len(packages)
+	}
+	return packages[offset:end], nil
 }
 
 // Rename creates a snapshot of a repository under a new name. Mutations that

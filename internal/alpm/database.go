@@ -54,6 +54,7 @@ func ReadDatabase(path string) ([]Package, error) {
 func parseDescription(r io.Reader) (Package, error) {
 	values := make(map[string][]string)
 	var section string
+	dependencyBytes := 0
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -62,6 +63,15 @@ func parseDescription(r io.Reader) (Package, error) {
 			continue
 		}
 		if line != "" && section != "" {
+			if section == "DEPENDS" {
+				if len(values[section]) >= packageMaxDependencies {
+					return Package{}, fmt.Errorf("description exceeds %d dependency limit", packageMaxDependencies)
+				}
+				dependencyBytes += len(line)
+				if dependencyBytes > packageDependenciesMaxBytes {
+					return Package{}, fmt.Errorf("description dependencies exceed %d byte limit", packageDependenciesMaxBytes)
+				}
+			}
 			values[section] = append(values[section], line)
 		}
 	}
