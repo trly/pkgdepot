@@ -18,6 +18,6 @@
 
 ## Tests
 
-- Inject HTTP servers, OAuth options, authorization prompts, and in-memory cache backends; never require a browser, keyring, or real provider.
+- Inject HTTP servers, OAuth options, authorization prompts, and in-memory cache backends; never require a browser, keyring, or real provider. `httpclient.New` uses the production OS keyring by default, so delegated-auth tests, including cancellation and error paths, must call `SetTokenStore(oauthcache.NewWithBackend(...))` before invoking a mutation.
 - Loopback tests bind ports 8085-8089 and must not run in parallel.
 - Run `go test ./internal/httpclient`.

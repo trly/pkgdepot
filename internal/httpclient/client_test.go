@@ -394,6 +394,7 @@ func TestAuthorizationCodeCancellationClosesLoopbackListener(t *testing.T) {
 	defer server.Close()
 
 	client := httpclient.New(ctx, server.URL)
+	client.SetTokenStore(oauthcache.NewWithBackend(&memoryTokenBackend{values: make(map[string]string)}))
 	client.OAuth.ClientID = "public-client"
 	client.OAuth.AuthorizationPrompt = func(string) { cancel() }
 	err := client.Remove(context.Background(), "stable", "x86_64", "example")
@@ -760,6 +761,7 @@ func TestAuthorizationCodeFailsWhenAllLoopbackPortsOccupied(t *testing.T) {
 	defer server.Close()
 
 	client := httpclient.New(context.Background(), server.URL)
+	client.SetTokenStore(oauthcache.NewWithBackend(&memoryTokenBackend{values: make(map[string]string)}))
 	client.OAuth.ClientID = "public-client"
 	err := client.Remove(context.Background(), "stable", "x86_64", "example")
 	if err == nil || !strings.Contains(err.Error(), "all loopback ports") {
