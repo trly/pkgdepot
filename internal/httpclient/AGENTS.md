@@ -14,7 +14,7 @@
 - Client credentials require client ID plus issuer pin before discovery, use `client_secret_basic`, and send the operation scope and RFC 8707 `resource`; delegated publisher/admin profiles use separate CIMD client IDs.
 - Delegated auth uses authorization code, S256 PKCE, state, `resource`, and an ephemeral IPv4 or IPv6 loopback callback. Keep callback binding synchronized with `internal/cimd`.
 - Preserve token-source reuse, 30s expiry margin, refresh `resource`, secure cache writes, per-cache-key refresh locking, and delegated reauthorization after refresh failure.
-- Login verifies OIDC identity/nonce before a CSRF-protected local scope selector. Escape identity data and cache scopes actually granted, not merely requested.
+- Login selects the published CIMD access profile and scopes locally, then performs one authorization-code transaction. Cache scopes actually granted, not merely requested.
 
 ## Tests
 

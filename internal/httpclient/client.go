@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"mime/multipart"
 	"net"
@@ -48,7 +46,6 @@ type Client struct {
 	adminID        string
 	activeClientID string
 	endpoint       oauth2.Endpoint
-	provider       *oidc.Provider
 	resourceScopes []string
 	tokenSources   map[string]oauth2.TokenSource
 	tokenStore     *oauthcache.Store
@@ -179,34 +176,17 @@ func (c *Client) Login(ctx context.Context, scopes []string) (*oauth2.Token, err
 		return nil, err
 	}
 	c.activeClientID = c.clientIDForAccess(access)
-	if access == AccessPublisher {
-		c.resourceScopes = []string{auth.ScopePublish}
-	}
-	identityConfig := oauth2.Config{ClientID: c.activeClientID, Endpoint: c.endpoint, Scopes: []string{"openid", "profile", "email"}}
-	identity, err := c.authorizeCode(ctx, identityConfig, "", true)
+	selectedScopes, err := loginScopes(access, scopes, c.resourceScopes)
 	if err != nil {
 		return nil, err
-	}
-	if user, verifyErr := c.identity(identity.token, identity.nonce); verifyErr == nil {
-		selected, selectErr := c.selectScopes(ctx, user, scopes)
-		if selectErr != nil {
-			return nil, selectErr
-		}
-		scopes = selected
-	} else if !strings.Contains(verifyErr.Error(), "did not return an OIDC ID token") {
-		return nil, verifyErr
-	}
-	if len(scopes) == 0 {
-		return nil, errors.New("at least one OAuth scope must be selected")
 	}
 	config := oauth2.Config{
 		ClientID: c.activeClientID,
 		Endpoint: c.endpoint,
-		Scopes:   append([]string(nil), scopes...),
+		Scopes:   append([]string(nil), selectedScopes...),
 	}
-	authContext := context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
 	token, err := (&authorizationCodeTokenSource{
-		ctx:                 authContext,
+		ctx:                 context.WithValue(ctx, oauth2.HTTPClient, c.HTTP),
 		config:              config,
 		client:              c,
 		resource:            c.resourceURL,
@@ -215,10 +195,40 @@ func (c *Client) Login(ctx context.Context, scopes []string) (*oauth2.Token, err
 	if err != nil {
 		return nil, err
 	}
-	if err := c.saveToken(token, grantedScopes(token, scopes)); err != nil {
+	if err := c.saveToken(token, grantedScopes(token, selectedScopes)); err != nil {
 		return nil, err
 	}
 	return token, nil
+}
+
+func loginScopes(access string, requested, available []string) ([]string, error) {
+	if len(requested) == 0 {
+		if access == AccessPublisher {
+			return []string{auth.ScopePublish}, nil
+		}
+		return append([]string(nil), available...), nil
+	}
+	allowed := make(map[string]bool, len(available))
+	for _, scope := range available {
+		allowed[scope] = true
+	}
+	selected := make([]string, 0, len(requested))
+	for _, scope := range requested {
+		if len(available) > 0 && !allowed[scope] {
+			return nil, fmt.Errorf("OAuth scope %q is not advertised by the protected resource", scope)
+		}
+		if !contains(selected, scope) {
+			selected = append(selected, scope)
+		}
+	}
+	if access == AccessPublisher {
+		for _, scope := range selected {
+			if scope != auth.ScopePublish {
+				return nil, fmt.Errorf("scope %q requires the admin OAuth access profile", scope)
+			}
+		}
+	}
+	return selected, nil
 }
 
 func (c *Client) Logout() error {
@@ -621,7 +631,6 @@ func (c *Client) doDiscover() error {
 		}
 	}
 	c.endpoint = endpoint
-	c.provider = provider
 	c.resourceScopes = append([]string(nil), resource.ScopesSupported...)
 	return nil
 }
@@ -819,222 +828,6 @@ type authorizationCodeTokenSource struct {
 
 type authorizationCodeResult struct {
 	token *oauth2.Token
-	nonce string
-}
-
-type authenticatedUser struct {
-	Subject           string `json:"sub"`
-	Name              string `json:"name"`
-	DisplayName       string `json:"display_name"`
-	PreferredUsername string `json:"preferred_username"`
-	Email             string `json:"email"`
-	Picture           string `json:"picture"`
-}
-
-// authorizeCode performs one authorization-code transaction. It uses a nonce
-// only for the identity transaction, whose ID token is verified by the caller.
-func (c *Client) authorizeCode(ctx context.Context, config oauth2.Config, resource string, useNonce bool) (authorizationCodeResult, error) {
-	return runAuthorizationCode(ctx, c.HTTP, c.OAuth.AuthorizationPrompt, config, resource, useNonce)
-}
-
-func (c *Client) identity(token *oauth2.Token, nonce string) (authenticatedUser, error) {
-	value, ok := token.Extra("id_token").(string)
-	if !ok || value == "" {
-		return authenticatedUser{}, errors.New("OAuth provider did not return an OIDC ID token")
-	}
-	if c.provider == nil {
-		return authenticatedUser{}, errors.New("OIDC provider metadata is unavailable")
-	}
-	verifier := c.provider.Verifier(&oidc.Config{ClientID: c.activeClientID})
-	idToken, err := verifier.Verify(c.ctx, value)
-	if err != nil {
-		return authenticatedUser{}, fmt.Errorf("verify OIDC ID token: %w", err)
-	}
-	if idToken.Nonce != nonce {
-		return authenticatedUser{}, errors.New("OIDC ID token nonce did not match")
-	}
-	if idToken.AccessTokenHash != "" {
-		if err := idToken.VerifyAccessToken(token.AccessToken); err != nil {
-			return authenticatedUser{}, fmt.Errorf("verify OIDC access-token hash: %w", err)
-		}
-	}
-	var user authenticatedUser
-	if err := idToken.Claims(&user); err != nil {
-		return authenticatedUser{}, fmt.Errorf("read OIDC user claims: %w", err)
-	}
-	if c.provider != nil {
-		if info, infoErr := c.provider.UserInfo(c.ctx, oauth2.StaticTokenSource(token)); infoErr == nil {
-			var enriched authenticatedUser
-			if claimsErr := info.Claims(&enriched); claimsErr == nil && enriched.Subject == user.Subject {
-				if enriched.Name != "" {
-					user.Name = enriched.Name
-				}
-				if enriched.DisplayName != "" {
-					user.DisplayName = enriched.DisplayName
-				}
-				if enriched.PreferredUsername != "" {
-					user.PreferredUsername = enriched.PreferredUsername
-				}
-				if enriched.Email != "" {
-					user.Email = enriched.Email
-				}
-				if enriched.Picture != "" {
-					user.Picture = enriched.Picture
-				}
-			}
-		}
-	}
-	return user, nil
-}
-
-func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, requested []string) ([]string, error) {
-	selectionContext, cancel := context.WithTimeout(ctx, oauthCallbackTimeout)
-	defer cancel()
-	available := c.resourceScopes
-	if len(available) == 0 {
-		available = requested
-	}
-	if len(available) == 0 {
-		return nil, errors.New("the protected resource did not advertise any selectable OAuth scopes")
-	}
-	selected := make(map[string]bool, len(requested))
-	for _, scope := range requested {
-		selected[scope] = true
-	}
-	listener, err := listenLoopback()
-	if err != nil {
-		return nil, err
-	}
-	defer listener.Close()
-	csrfToken, err := randomURLValue()
-	if err != nil {
-		return nil, fmt.Errorf("generate scope selector token: %w", err)
-	}
-	result := make(chan []string, 1)
-	server := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/scope" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src https: http://127.0.0.1 http://localhost; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		if r.Method == http.MethodPost {
-			if err := r.ParseForm(); err != nil {
-				http.Error(w, "invalid scope selection", http.StatusBadRequest)
-				return
-			}
-			providedToken := r.FormValue("csrf_token")
-			if subtle.ConstantTimeCompare([]byte(providedToken), []byte(csrfToken)) != 1 {
-				http.Error(w, "invalid scope selection token", http.StatusBadRequest)
-				return
-			}
-			values := r.Form["scope"]
-			allowed := make(map[string]bool, len(available))
-			for _, scope := range available {
-				allowed[scope] = true
-			}
-			chosen := make([]string, 0, len(values))
-			for _, scope := range values {
-				if allowed[scope] && !contains(chosen, scope) {
-					chosen = append(chosen, scope)
-				}
-			}
-			if len(chosen) == 0 {
-				http.Error(w, "select at least one permission", http.StatusBadRequest)
-				return
-			}
-			select {
-			case result <- chosen:
-			default:
-				http.Error(w, "scope selection has already been submitted", http.StatusConflict)
-				return
-			}
-			_, _ = io.WriteString(w, "Permissions selected. You can close this window.\n")
-			return
-		} else if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		providedToken := r.URL.Query().Get("token")
-		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(csrfToken)) != 1 {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, scopePage(user, available, selected, csrfToken))
-	})}
-	go server.Serve(listener)
-	defer func() {
-		shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
-		defer shutdownCancel()
-		_ = server.Shutdown(shutdownContext)
-	}()
-	pageURL := "http://" + listener.Addr().String() + "/scope?token=" + url.QueryEscape(csrfToken)
-	if c.OAuth.AuthorizationPrompt != nil {
-		c.OAuth.AuthorizationPrompt(pageURL)
-	}
-	select {
-	case selected := <-result:
-		return selected, nil
-	case <-selectionContext.Done():
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errors.New("scope selection timed out")
-	}
-}
-
-func scopePage(user authenticatedUser, scopes []string, selected map[string]bool, csrfToken string) string {
-	name := user.DisplayName
-	if name == "" {
-		name = user.Name
-	}
-	if name == "" {
-		name = user.PreferredUsername
-	}
-	if name == "" {
-		name = "authenticated user"
-	}
-	var b strings.Builder
-	b.WriteString("<!doctype html><meta name=\"viewport\" content=\"width=device-width\"><title>pkgdepot permissions</title><style>body{font:16px system-ui;max-width:38rem;margin:3rem auto;padding:0 1rem}img{width:72px;height:72px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:1rem}label{display:block;padding:.7rem;border:1px solid #ddd;border-radius:.5rem;margin:.5rem 0}button{padding:.7rem 1rem}</style>")
-	if picture := safePictureURL(user.Picture); picture != "" {
-		fmt.Fprintf(&b, "<img src=\"%s\" alt=\"\"><strong>", html.EscapeString(picture))
-	} else {
-		b.WriteString("<strong>")
-	}
-	fmt.Fprintf(&b, "Continue as %s?</strong>", html.EscapeString(name))
-	if user.Email != "" {
-		fmt.Fprintf(&b, "<p>%s</p>", html.EscapeString(user.Email))
-	}
-	fmt.Fprintf(&b, "<form method=post><input type=hidden name=csrf_token value=\"%s\"><h2>Select permissions</h2>", html.EscapeString(csrfToken))
-	for _, scope := range scopes {
-		checked := ""
-		if selected[scope] {
-			checked = " checked"
-		}
-		label := map[string]string{
-			"package:publish": "Publish packages",
-			"package:remove":  "Remove packages",
-			"repo:create":     "Create repositories",
-			"repo:remove":     "Remove repositories",
-			"repo:rename":     "Rename repositories",
-		}[scope]
-		if label == "" {
-			label = scope
-		}
-		fmt.Fprintf(&b, "<label><input type=checkbox name=scope value=\"%s\"%s> <strong>%s</strong><br><small>%s</small></label>", html.EscapeString(scope), checked, html.EscapeString(label), html.EscapeString(scope))
-	}
-	b.WriteString("<p><button>Continue</button></p></form>")
-	return b.String()
-}
-
-func safePictureURL(value string) string {
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.User != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
-		return ""
-	}
-	return parsed.String()
 }
 
 type authorizationResult struct {
@@ -1096,7 +889,7 @@ func (s *authorizationCodeTokenSource) authorize() (*oauth2.Token, error) {
 	if s.client != nil && s.client.HTTP != nil {
 		httpClient = s.client.HTTP
 	}
-	result, err := runAuthorizationCode(s.ctx, httpClient, s.authorizationPrompt, s.config, s.resource, false)
+	result, err := runAuthorizationCode(s.ctx, httpClient, s.authorizationPrompt, s.config, s.resource)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,7 +898,7 @@ func (s *authorizationCodeTokenSource) authorize() (*oauth2.Token, error) {
 
 const oauthCallbackTimeout = 5 * time.Minute
 
-func runAuthorizationCode(ctx context.Context, httpClient *http.Client, prompt func(string), config oauth2.Config, resource string, useNonce bool) (authorizationCodeResult, error) {
+func runAuthorizationCode(ctx context.Context, httpClient *http.Client, prompt func(string), config oauth2.Config, resource string) (authorizationCodeResult, error) {
 	transactionContext, cancel := context.WithTimeout(ctx, oauthCallbackTimeout)
 	defer cancel()
 	state, err := randomURLValue()
@@ -1113,13 +906,6 @@ func runAuthorizationCode(ctx context.Context, httpClient *http.Client, prompt f
 		return authorizationCodeResult{}, fmt.Errorf("generate OAuth state: %w", err)
 	}
 	verifier := oauth2.GenerateVerifier()
-	nonce := ""
-	if useNonce {
-		nonce, err = randomURLValue()
-		if err != nil {
-			return authorizationCodeResult{}, fmt.Errorf("generate OIDC nonce: %w", err)
-		}
-	}
 	listener, err := listenLoopback()
 	if err != nil {
 		return authorizationCodeResult{}, err
@@ -1171,9 +957,6 @@ func runAuthorizationCode(ctx context.Context, httpClient *http.Client, prompt f
 		_ = server.Shutdown(shutdownContext)
 	}()
 	authOptions := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier)}
-	if useNonce {
-		authOptions = append(authOptions, oidc.Nonce(nonce))
-	}
 	if resource != "" {
 		authOptions = append(authOptions, oauth2.SetAuthURLParam("resource", resource))
 	}
@@ -1194,7 +977,7 @@ func runAuthorizationCode(ctx context.Context, httpClient *http.Client, prompt f
 		if err != nil {
 			return authorizationCodeResult{}, fmt.Errorf("exchange OAuth authorization code: %w", err)
 		}
-		return authorizationCodeResult{token: token, nonce: nonce}, nil
+		return authorizationCodeResult{token: token}, nil
 	case <-transactionContext.Done():
 		if ctx.Err() != nil {
 			return authorizationCodeResult{}, ctx.Err()

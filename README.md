@@ -119,10 +119,15 @@ pkgdepot repo create stable
 pkgdepot package publish stable ./example-1.0-1-x86_64.pkg.tar.zst
 ```
 
-The CLI prints URLs for identity verification and scope selection. Use
-`--access publisher` or `--access admin` to select a CIMD client; administrative
-scopes select the admin client automatically. Run `pkgdepot logout` to delete
-cached delegated tokens. For a provider without CIMD, set
+The CLI opens one authorization URL for the selected access profile. Pocket ID
+performs authentication and displays the requested permissions. `--access`
+selects the CIMD client, either `publisher` or `admin`; it defaults to
+`publisher`. `--scope` selects the operation permissions requested from that
+client and may be repeated. Without `--scope`, publisher login requests
+`package:publish`, while admin login requests all scopes advertised by the
+protected resource. Publisher access cannot request administrative scopes such
+as `package:remove`; use `--access admin` explicitly. Run `pkgdepot logout` to
+delete cached delegated tokens. For a provider without CIMD, set
 `PKGDEPOT_OAUTH_CLIENT_ID` to a registered client ID before login. For the
 default local HTTP URL, a pre-registered client ID is always required.
 
