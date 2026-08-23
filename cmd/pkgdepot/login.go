@@ -9,7 +9,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-var defaultOAuthScopes = []string{"package:publish", "package:remove"}
+var defaultOAuthScopes = []string{}
 
 func loginCommand() *cli.Command {
 	return &cli.Command{

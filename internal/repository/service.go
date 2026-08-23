@@ -23,12 +23,16 @@ var (
 	packagePattern   = regexp.MustCompile(`\.pkg\.tar(?:\.gz|\.bz2|\.xz|\.zst)?$`)
 )
 
-var ErrNotFound = errors.New("package not found")
+var (
+	ErrNotFound           = errors.New("package not found")
+	ErrRepositoryNotFound = errors.New("repository not found")
+)
 
 type Service struct {
-	root     string
-	commands command.RepositoryCommands
-	mutexes  sync.Map
+	root            string
+	commands        command.RepositoryCommands
+	mutexes         sync.Map
+	mutationRWMutex sync.RWMutex
 }
 
 // Upload is a disk-backed package upload waiting to be published.
@@ -251,10 +255,16 @@ func (s *Service) Rename(oldRepository, newRepository string) error {
 		return errors.New("old and new repository names must differ")
 	}
 
+	unlock, err := s.lockLifecycle()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	oldDirectory := filepath.Join(s.repositoriesRoot(), oldRepository)
 	oldInfo, err := os.Lstat(oldDirectory)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("repository %q does not exist", oldRepository)
+		return fmt.Errorf("%w: %q", ErrRepositoryNotFound, oldRepository)
 	}
 	if err != nil {
 		return fmt.Errorf("inspect repository %q: %w", oldRepository, err)
@@ -301,6 +311,11 @@ func (s *Service) Create(repository string) error {
 	if err := validateTarget(repository, "any"); err != nil {
 		return err
 	}
+	unlock, err := s.lockLifecycle()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	directory := filepath.Join(s.repositoriesRoot(), repository)
 	if err := os.Mkdir(directory, 0o755); err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -315,10 +330,15 @@ func (s *Service) RemoveRepository(repository string) error {
 	if err := validateTarget(repository, "any"); err != nil {
 		return err
 	}
+	unlock, err := s.lockLifecycle()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	directory := filepath.Join(s.repositoriesRoot(), repository)
 	info, err := os.Lstat(directory)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("repository %q does not exist", repository)
+		return fmt.Errorf("%w: %q", ErrRepositoryNotFound, repository)
 	}
 	if err != nil {
 		return fmt.Errorf("inspect repository %q: %w", repository, err)
@@ -543,6 +563,10 @@ func (s *Service) HasSignature(repository, architecture, filename string) (bool,
 }
 
 func (s *Service) lock(repository, architecture string) (func(), error) {
+	unlockGlobal, err := s.lockGlobal(true)
+	if err != nil {
+		return nil, err
+	}
 	key := repository + "/" + architecture
 	value, _ := s.mutexes.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
@@ -551,17 +575,53 @@ func (s *Service) lock(repository, architecture string) (func(), error) {
 	lockFile, err := os.OpenFile(filepath.Join(s.locksRoot(), repository+"-"+architecture+".lock"), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		mutex.Unlock()
+		unlockGlobal()
 		return nil, fmt.Errorf("open repository lock: %w", err)
 	}
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		lockFile.Close()
 		mutex.Unlock()
+		unlockGlobal()
 		return nil, fmt.Errorf("lock repository: %w", err)
 	}
 	return func() {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
 		mutex.Unlock()
+		unlockGlobal()
+	}, nil
+}
+
+func (s *Service) lockLifecycle() (func(), error) {
+	return s.lockGlobal(false)
+}
+
+func (s *Service) lockGlobal(shared bool) (func(), error) {
+	lockFile, err := os.OpenFile(filepath.Join(s.locksRoot(), "repositories.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open repository lifecycle lock: %w", err)
+	}
+	operation := syscall.LOCK_EX
+	if shared {
+		operation = syscall.LOCK_SH
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), operation); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("lock repository lifecycle: %w", err)
+	}
+	if shared {
+		s.mutationRWMutex.RLock()
+	} else {
+		s.mutationRWMutex.Lock()
+	}
+	return func() {
+		if shared {
+			s.mutationRWMutex.RUnlock()
+		} else {
+			s.mutationRWMutex.Unlock()
+		}
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
 	}, nil
 }
 

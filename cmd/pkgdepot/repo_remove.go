@@ -4,23 +4,21 @@ import (
 	"context"
 	"errors"
 
+	"github.com/trly/pkgdepot/internal/httpclient"
 	"github.com/urfave/cli/v3"
 )
 
 func repoRemoveCommand() *cli.Command {
 	return &cli.Command{
-		Name: "remove", Usage: "remove a local package repository", ArgsUsage: "<repository>",
-		Flags: []cli.Flag{dataRootFlag()}, Action: repoRemove,
+		Name: "remove", Usage: "remove a package repository", ArgsUsage: "<repository>",
+		Flags: clientFlags(), Action: repoRemove,
 	}
 }
 
-func repoRemove(_ context.Context, cmd *cli.Command) error {
+func repoRemove(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 1 {
 		return errors.New("usage: pkgdepot repo remove [options] <repository>")
 	}
-	repositories, err := localRepositories(cmd)
-	if err != nil {
-		return err
-	}
-	return repositories.RemoveRepository(cmd.Args().First())
+	client := httpclient.New(ctx, cmd.String("url"))
+	return client.RemoveRepository(ctx, cmd.Args().First())
 }

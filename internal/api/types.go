@@ -20,6 +20,10 @@ type Repository struct {
 	Architectures []string `json:"architectures"`
 }
 
+type RenameRepositoryRequest struct {
+	Name string `json:"name"`
+}
+
 // ErrorResponse is returned by API endpoints for non-success responses.
 // Error is retained as the human-readable field for compatibility; clients
 // should use Code for branching and display Error to users.

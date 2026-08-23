@@ -4,29 +4,25 @@ import (
 	"context"
 	"errors"
 
-	"github.com/trly/pkgdepot/internal/command"
-	"github.com/trly/pkgdepot/internal/repository"
+	"github.com/trly/pkgdepot/internal/httpclient"
 	"github.com/urfave/cli/v3"
 )
 
 func repoRenameCommand() *cli.Command {
 	return &cli.Command{
 		Name:        "rename",
-		Usage:       "rename a local package repository",
+		Usage:       "rename a package repository",
 		ArgsUsage:   "<old-repository> <new-repository>",
-		Description: "Create a renamed snapshot of a repository and its architecture databases in the local data root.",
-		Flags:       []cli.Flag{dataRootFlag()},
+		Description: "Rename a repository and its architecture databases on the server.",
+		Flags:       clientFlags(),
 		Action:      renameRepository,
 	}
 }
 
-func renameRepository(_ context.Context, cmd *cli.Command) error {
+func renameRepository(ctx context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 2 {
 		return errors.New("usage: pkgdepot repo rename [options] <old-repository> <new-repository>")
 	}
-	repositories := repository.New(cmd.String("data-root"), command.NewPacman())
-	if err := repositories.Initialize(); err != nil {
-		return err
-	}
-	return repositories.Rename(cmd.Args().Get(0), cmd.Args().Get(1))
+	client := httpclient.New(ctx, cmd.String("url"))
+	return client.RenameRepository(ctx, cmd.Args().Get(0), cmd.Args().Get(1))
 }
