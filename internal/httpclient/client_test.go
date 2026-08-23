@@ -3,13 +3,12 @@ package httpclient_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -117,16 +116,10 @@ func TestAuthorizationCodeUsesPKCEAndLoopbackCallback(t *testing.T) {
 	if parsedRedirect.Hostname() != "127.0.0.1" || parsedRedirect.Path != "/oauth/callback" {
 		t.Fatalf("redirect_uri = %q, want loopback address", redirectURI)
 	}
-	port := 0
-	for _, p := range httpclient.LoopbackPorts {
-		if fmt.Sprintf("%d", p) == parsedRedirect.Port() {
-			port = p
-		}
+	if parsedRedirect.Port() == "" || parsedRedirect.Port() == "0" {
+		t.Fatalf("redirect_uri did not use an ephemeral port: %q", redirectURI)
 	}
-	if port == 0 {
-		t.Fatalf("redirect_uri port %s not in LoopbackPorts %v", parsedRedirect.Port(), httpclient.LoopbackPorts)
-	}
-	if authorizationRequest.Get("scope") != "openid package:remove" || authorizationRequest.Get("resource") != server.URL {
+	if authorizationRequest.Get("scope") != "package:remove" || authorizationRequest.Get("resource") != server.URL {
 		t.Fatalf("authorization request = %v", authorizationRequest)
 	}
 	if authorizationRequest.Get("code_challenge") == "" || authorizationRequest.Get("code_challenge_method") != "S256" || authorizationRequest.Get("state") == "" {
@@ -175,7 +168,7 @@ func TestAuthorizationCodeUsesCIMDClientIDByDefault(t *testing.T) {
 	if err := client.Remove(context.Background(), "stable", "x86_64", "example"); err == nil {
 		t.Fatal("Remove() unexpectedly succeeded")
 	}
-	if authorizationRequest.Get("client_id") != server.URL+"/oauth/client-metadata.json" {
+	if authorizationRequest.Get("client_id") != server.URL+"/oauth/clients/cli-admin" {
 		t.Fatalf("client_id = %q", authorizationRequest.Get("client_id"))
 	}
 }
@@ -660,8 +653,8 @@ func oauthServerWithCIMD(t *testing.T, handler func(http.ResponseWriter, *http.R
 			_, _ = io.WriteString(w, `{"resource":"`+server.URL+`","authorization_servers":["`+server.URL+`"]}`)
 		case "/.well-known/openid-configuration":
 			_, _ = io.WriteString(w, `{"issuer":"`+server.URL+`","authorization_endpoint":"`+server.URL+`/authorize","token_endpoint":"`+server.URL+`/token","token_endpoint_auth_methods_supported":["none"],"client_id_metadata_document_supported":true}`)
-		case "/oauth/client-metadata.json":
-			_, _ = io.WriteString(w, `{"client_id":"`+server.URL+`/oauth/client-metadata.json","redirect_uris":["http://127.0.0.1:8085/oauth/callback"],"token_endpoint_auth_method":"none"}`)
+		case "/oauth/clients/cli-publisher", "/oauth/clients/cli-admin":
+			_, _ = io.WriteString(w, `{"client_id":"`+server.URL+r.URL.Path+`","redirect_uris":["http://127.0.0.1/oauth/callback","http://[::1]/oauth/callback"],"token_endpoint_auth_method":"none"}`)
 		default:
 			handler(w, r)
 		}
@@ -674,16 +667,11 @@ func writeJSON(w http.ResponseWriter, body string) {
 	_, _ = io.WriteString(w, body)
 }
 
-func TestLoopbackRedirectURLsCoversAllPorts(t *testing.T) {
+func TestLoopbackRedirectURLs(t *testing.T) {
 	urls := httpclient.LoopbackRedirectURLs()
-	if len(urls) != len(httpclient.LoopbackPorts) {
-		t.Fatalf("LoopbackRedirectURLs() returned %d URLs, want %d", len(urls), len(httpclient.LoopbackPorts))
-	}
-	for i, port := range httpclient.LoopbackPorts {
-		want := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", port)
-		if urls[i] != want {
-			t.Fatalf("LoopbackRedirectURLs()[%d] = %q, want %q", i, urls[i], want)
-		}
+	want := []string{"http://127.0.0.1/oauth/callback", "http://[::1]/oauth/callback"}
+	if !reflect.DeepEqual(urls, want) {
+		t.Fatalf("LoopbackRedirectURLs() = %v, want %v", urls, want)
 	}
 }
 
@@ -738,35 +726,6 @@ func containsRequest(requests []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func TestAuthorizationCodeFailsWhenAllLoopbackPortsOccupied(t *testing.T) {
-	holders := make([]net.Listener, len(httpclient.LoopbackPorts))
-	for i, port := range httpclient.LoopbackPorts {
-		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err != nil {
-			t.Fatalf("occupy port %d: %v", port, err)
-		}
-		holders[i] = l
-	}
-	defer func() {
-		for _, l := range holders {
-			_ = l.Close()
-		}
-	}()
-
-	server := oauthServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	defer server.Close()
-
-	client := httpclient.New(context.Background(), server.URL)
-	client.SetTokenStore(oauthcache.NewWithBackend(&memoryTokenBackend{values: make(map[string]string)}))
-	client.OAuth.ClientID = "public-client"
-	err := client.Remove(context.Background(), "stable", "x86_64", "example")
-	if err == nil || !strings.Contains(err.Error(), "all loopback ports") {
-		t.Fatalf("Remove() error = %v, want all-loopback-ports error", err)
-	}
 }
 
 func TestLoginPropagatesIdentityAuthorizationError(t *testing.T) {

@@ -19,7 +19,7 @@
 
 ## Protocol Boundaries
 
-- The server is an OAuth 2.0 protected resource; list/download routes are public and mutations require operation-specific scopes.
+- The server is an OAuth 2.0 protected resource; list/download routes are public and mutations require operation-specific scopes. Identity-provider client restrictions, not local user/role mappings, determine who receives those scopes.
 - The CLI discovers RFC 9728 protected-resource metadata and then OIDC metadata. Generic RFC 8414-only providers and direct endpoint overrides are unsupported.
 - Keep OAuth mechanics in `golang.org/x/oauth2`, OIDC discovery/validation in `go-oidc`, URL trust rules in `internal/urlpolicy`, and authorization policy in `internal/auth`.
 - `PKGDEPOT_OIDC_*` configures the server; `PKGDEPOT_OAUTH_*` configures CLI clients. Do not interchange them.

@@ -22,12 +22,12 @@ func TestResourceServerDefaultsAudienceToResourceURL(t *testing.T) {
 		})
 	}))
 	defer issuer.Close()
-	resource, err := resourceServer(config.Config{URL: "https://packages.example", HTTPTimeout: time.Second, Auth: config.OIDCConfig{Issuer: issuer.URL, RoleScopes: map[string][]string{"publisher": {auth.ScopePublish}}, ClientCredentialsSubjectTemplate: "{client_id}"}})
+	resource, err := resourceServer(config.Config{URL: "https://packages.example", HTTPTimeout: time.Second, Auth: config.OIDCConfig{Issuer: issuer.URL}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resource.Metadata.Resource != "https://packages.example" || !resource.Authorize(auth.Claims{Roles: []string{"publisher"}, Scopes: []string{auth.ScopePublish}}, auth.ScopePublish, "stable", "x86_64") {
-		t.Fatal("resource server did not wire role authorization")
+	if resource.Metadata.Resource != "https://packages.example" || !resource.Authorize(auth.Claims{Scopes: []string{auth.ScopePublish}}, auth.ScopePublish, "stable", "x86_64") {
+		t.Fatal("resource server did not wire scope authorization")
 	}
 	if !resource.Authorize(auth.Claims{Scopes: []string{auth.ScopePublish}, Subject: "app", ClientID: "app"}, auth.ScopePublish, "stable", "x86_64") {
 		t.Fatal("resource server rejected a client-credentials scope")

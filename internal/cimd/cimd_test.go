@@ -22,14 +22,28 @@ func TestNewMetadata(t *testing.T) {
 		t.Fatalf("metadata = %+v", metadata)
 	}
 	wantRedirects := []string{
-		"http://127.0.0.1:8085/oauth/callback",
-		"http://127.0.0.1:8086/oauth/callback",
-		"http://127.0.0.1:8087/oauth/callback",
-		"http://127.0.0.1:8088/oauth/callback",
-		"http://127.0.0.1:8089/oauth/callback",
+		"http://127.0.0.1/oauth/callback",
+		"http://[::1]/oauth/callback",
 	}
 	if !reflect.DeepEqual(metadata.RedirectURIs, wantRedirects) {
 		t.Fatalf("redirect_uris = %v, want %v", metadata.RedirectURIs, wantRedirects)
+	}
+}
+
+func TestProfileMetadataUsesDistinctClientIDs(t *testing.T) {
+	publisher, err := cimd.NewProfileMetadata("https://packages.example", cimd.PublisherMetadataPath, "pkgdepot CLI - Publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := cimd.NewProfileMetadata("https://packages.example", cimd.AdminMetadataPath, "pkgdepot CLI - Admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publisher.ClientID == admin.ClientID || publisher.ClientID != "https://packages.example/oauth/clients/cli-publisher" || admin.ClientID != "https://packages.example/oauth/clients/cli-admin" {
+		t.Fatalf("profile client IDs = %q, %q", publisher.ClientID, admin.ClientID)
+	}
+	if publisher.ClientName != "pkgdepot CLI - Publisher" || admin.ClientName != "pkgdepot CLI - Admin" {
+		t.Fatalf("profile names = %q, %q", publisher.ClientName, admin.ClientName)
 	}
 }
 

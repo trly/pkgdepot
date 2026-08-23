@@ -9,9 +9,11 @@ import (
 	"strings"
 )
 
-const MetadataPath = "/oauth/client-metadata.json"
-
-var LoopbackPorts = []int{8085, 8086, 8087, 8088, 8089}
+const (
+	MetadataPath          = "/oauth/client-metadata.json"
+	PublisherMetadataPath = "/oauth/clients/cli-publisher"
+	AdminMetadataPath     = "/oauth/clients/cli-admin"
+)
 
 // Metadata is an OAuth Client ID Metadata Document for the pkgdepot CLI.
 type Metadata struct {
@@ -25,6 +27,13 @@ type Metadata struct {
 }
 
 func MetadataURL(resource string) (string, error) {
+	return MetadataURLForPath(resource, MetadataPath)
+}
+
+func MetadataURLForPath(resource, metadataPath string) (string, error) {
+	if metadataPath == "" || !strings.HasPrefix(metadataPath, "/") {
+		return "", errors.New("CIMD metadata path must be absolute")
+	}
 	parsed, err := url.Parse(resource)
 	if err != nil {
 		return "", fmt.Errorf("parse resource URL: %w", err)
@@ -42,23 +51,26 @@ func MetadataURL(resource string) (string, error) {
 		}
 	}
 	rawPath := parsed.RawPath
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + MetadataPath
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + metadataPath
 	if rawPath != "" {
-		parsed.RawPath = strings.TrimRight(rawPath, "/") + MetadataPath
+		parsed.RawPath = strings.TrimRight(rawPath, "/") + metadataPath
 	}
 	return parsed.String(), nil
 }
 
 func RedirectURLs() []string {
-	urls := make([]string, len(LoopbackPorts))
-	for i, port := range LoopbackPorts {
-		urls[i] = fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", port)
+	return []string{
+		"http://127.0.0.1/oauth/callback",
+		"http://[::1]/oauth/callback",
 	}
-	return urls
 }
 
 func NewMetadata(resource, name string) (Metadata, error) {
-	clientID, err := MetadataURL(resource)
+	return NewProfileMetadata(resource, MetadataPath, name)
+}
+
+func NewProfileMetadata(resource, metadataPath, name string) (Metadata, error) {
+	clientID, err := MetadataURLForPath(resource, metadataPath)
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -77,8 +89,12 @@ func NewMetadata(resource, name string) (Metadata, error) {
 }
 
 func Handler(resource, name string) http.Handler {
+	return ProfileHandler(resource, MetadataPath, name)
+}
+
+func ProfileHandler(resource, metadataPath, name string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		metadata, err := NewMetadata(resource, name)
+		metadata, err := NewProfileMetadata(resource, metadataPath, name)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

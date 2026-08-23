@@ -31,8 +31,8 @@ func (v resourceValidator) Validate(context.Context, string) (auth.Claims, error
 	if v.err != nil {
 		return auth.Claims{}, v.err
 	}
-	if v.claims.Scopes == nil && v.claims.Roles == nil {
-		return auth.Claims{Scopes: []string{"package:publish"}, Roles: []string{"publisher"}}, nil
+	if v.claims.Scopes == nil {
+		return auth.Claims{Scopes: []string{"package:publish"}}, nil
 	}
 	return v.claims, nil
 }
@@ -51,7 +51,7 @@ func TestHealthAndAuthentication(t *testing.T) {
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}}, "")
+				return auth.HasScope(claims, scope)
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
@@ -102,19 +102,13 @@ func TestRepositoryLifecycleAPI(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	roleScopes := map[string][]string{"admin": {
-		auth.ScopeRepositoryCreate,
-		auth.ScopeRepositoryRemove,
-		auth.ScopeRepositoryRename,
-	}}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{claims: auth.Claims{
 				Scopes: []string{auth.ScopeRepositoryCreate, auth.ScopeRepositoryRemove, auth.ScopeRepositoryRename},
-				Roles:  []string{"admin"},
 			}},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, roleScopes, "")
+				return auth.HasScope(claims, scope)
 			},
 			Metadata: auth.ResourceMetadata{Resource: "http://localhost:8080"},
 		},
@@ -174,7 +168,7 @@ func TestResourceServerAuthenticationAndMetadata(t *testing.T) {
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{ResourceAuth: &auth.ResourceServer{
 		Validator: resourceValidator{},
 		Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-			return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}}, "")
+			return auth.HasScope(claims, scope)
 		},
 		Metadata: auth.ResourceMetadata{
 			Resource:               "http://localhost:8080",
@@ -277,7 +271,7 @@ func TestCIMDMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := httpapi.New(service, "https://packages.example/pkgdepot")
-	request := httptest.NewRequest(http.MethodGet, "/oauth/client-metadata.json", nil)
+	request := httptest.NewRequest(http.MethodGet, "/oauth/clients/cli-publisher", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -290,11 +284,27 @@ func TestCIMDMetadata(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata.ClientID != "https://packages.example/pkgdepot/oauth/client-metadata.json" {
+	if metadata.ClientID != "https://packages.example/pkgdepot/oauth/clients/cli-publisher" {
 		t.Fatalf("client_id = %q", metadata.ClientID)
 	}
-	if len(metadata.RedirectURIs) != 5 {
+	if len(metadata.RedirectURIs) != 2 {
 		t.Fatalf("redirect_uris = %v", metadata.RedirectURIs)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/oauth/clients/cli-admin", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin CIMD status = %d", response.Code)
+	}
+	metadata = struct {
+		ClientID     string   `json:"client_id"`
+		RedirectURIs []string `json:"redirect_uris"`
+	}{}
+	if err := json.NewDecoder(response.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ClientID != "https://packages.example/pkgdepot/oauth/clients/cli-admin" {
+		t.Fatalf("admin client_id = %q", metadata.ClientID)
 	}
 }
 
@@ -315,17 +325,16 @@ func TestResourceMetadataUsesRFC9728PathForCanonicalURL(t *testing.T) {
 	}
 }
 
-func TestMutationAuthorizationRequiresRoleMapping(t *testing.T) {
+func TestMutationAuthorizationRequiresScope(t *testing.T) {
 	service := repository.New(t.TempDir(), commands{})
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	roleScopes := map[string][]string{"publisher": {auth.ScopePublish}}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
-			Validator: resourceValidator{claims: auth.Claims{Roles: []string{"publisher"}, Scopes: []string{auth.ScopePublish}}},
+			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{auth.ScopePublish}}},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, roleScopes, "")
+				return auth.HasScope(claims, scope)
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
@@ -369,12 +378,11 @@ func TestMutationAuthorizationAllowsClientCredentialsScope(t *testing.T) {
 	if err := service.Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	roleScopes := map[string][]string{"publisher": {auth.ScopePublish}}
 	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{claims: auth.Claims{Scopes: []string{"package:publish"}, Subject: "client-app", ClientID: "app"}},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, roleScopes, "client-{client_id}")
+				return auth.HasScope(claims, scope)
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",
@@ -430,7 +438,7 @@ func TestPublishStreamsMultipartPartsToDataRoot(t *testing.T) {
 		ResourceAuth: &auth.ResourceServer{
 			Validator: resourceValidator{},
 			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
-				return auth.AuthorizeRoles(claims, scope, map[string][]string{"publisher": {auth.ScopePublish}}, "")
+				return auth.HasScope(claims, scope)
 			},
 			Metadata: auth.ResourceMetadata{
 				Resource:               "http://localhost:8080",

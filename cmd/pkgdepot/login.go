@@ -19,6 +19,9 @@ func loginCommand() *cli.Command {
 			Name:  "scope",
 			Usage: "OAuth scope to request; may be repeated",
 			Value: append([]string(nil), defaultOAuthScopes...),
+		}, &cli.StringFlag{
+			Name:  "access",
+			Usage: "OAuth access profile (publisher or admin)",
 		}),
 		Action: login,
 	}
@@ -26,6 +29,7 @@ func loginCommand() *cli.Command {
 
 func login(ctx context.Context, cmd *cli.Command) error {
 	client := httpclient.New(ctx, cmd.String("url"))
+	client.OAuth.Access = cmd.String("access")
 	token, err := client.Login(ctx, cmd.StringSlice("scope"))
 	if err != nil {
 		return err

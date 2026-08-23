@@ -85,23 +85,26 @@ client specified with `PKGDEPOT_OAUTH_CLIENT_ID`. Pre-registered clients must
 allow these loopback callbacks:
 
 ```text
-http://127.0.0.1:8085/oauth/callback
-http://127.0.0.1:8086/oauth/callback
-http://127.0.0.1:8087/oauth/callback
-http://127.0.0.1:8088/oauth/callback
-http://127.0.0.1:8089/oauth/callback
+http://127.0.0.1/oauth/callback
+http://[::1]/oauth/callback
 ```
 
-Delegated access tokens need both the requested OAuth scope and a role mapped to
-that scope. By default, roles are read from the `pkgdepot_roles` claim:
+The CLI selects IPv4 or IPv6 and binds an ephemeral port for each login. Do not
+register fixed ports; the provider matches these loopback redirect URIs with a
+variable port.
 
-```json
-{"pkgdepot_roles":["publisher"]}
-```
+Authorization is controlled by the identity provider's client restrictions and
+resource scopes. pkgdepot publishes two CIMD clients:
 
-The built-in `admin` role grants every mutation scope. `publisher` grants only
-`package:publish`. Configure a different claim or mapping with
-`PKGDEPOT_ROLE_CLAIM` and `PKGDEPOT_ROLE_SCOPES`.
+| Client | CIMD client ID path | Intended group | Scopes |
+| --- | --- | --- | --- |
+| Publisher | `/oauth/clients/cli-publisher` | `pkgdepot publishers` | `package:publish` |
+| Admin | `/oauth/clients/cli-admin` | `pkgdepot administrators` | All mutation scopes |
+
+Restrict each client to its corresponding provider group. pkgdepot does not
+read user roles or map role claims; a validated access token with the requested
+operation scope is authorized. The token audience remains the canonical
+`PKGDEPOT_URL`, not either CIMD client ID.
 
 ### Delegated CLI login
 
@@ -111,22 +114,22 @@ HTTPS deployment with a provider that supports CIMD:
 ```sh
 export PKGDEPOT_URL=https://packages.example.com
 
-pkgdepot login --scope repo:create --scope package:publish
+pkgdepot login --access admin --scope repo:create --scope package:publish
 pkgdepot repo create stable
 pkgdepot package publish stable ./example-1.0-1-x86_64.pkg.tar.zst
 ```
 
-The CLI prints URLs for identity verification and scope selection. Run
-`pkgdepot logout` to delete its cached delegated token. For a provider without
-CIMD, set `PKGDEPOT_OAUTH_CLIENT_ID` to a registered client ID before login.
-For the default local HTTP URL, a pre-registered client ID is always required.
+The CLI prints URLs for identity verification and scope selection. Use
+`--access publisher` or `--access admin` to select a CIMD client; administrative
+scopes select the admin client automatically. Run `pkgdepot logout` to delete
+cached delegated tokens. For a provider without CIMD, set
+`PKGDEPOT_OAUTH_CLIENT_ID` to a registered client ID before login. For the
+default local HTTP URL, a pre-registered client ID is always required.
 
 ### Automation with client credentials
 
 For headless or containerized automation, configure a confidential client. The
-server must set `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` to the format of
-the provider's client-credentials subject, for example `client-{client_id}`.
-The client needs an ID, secret, and issuer pin:
+client needs an ID, secret, issuer pin, and the required operation scopes:
 
 ```sh
 PKGDEPOT_URL=https://packages.example.com \
@@ -147,13 +150,12 @@ To use Pocket ID with client credentials:
 1. Create a `pkgdepot` API whose resource is the exact public `PKGDEPOT_URL`.
 2. Add the required operation scopes, such as `package:publish` and `package:remove`.
 3. Create a confidential OIDC client and grant its API access under **Client access**.
-4. Start pkgdepot with the Pocket ID issuer and a matching subject template.
+4. Start pkgdepot with the Pocket ID issuer.
 5. Configure the CLI with the confidential client credentials as shown above.
 
 ```sh
 PKGDEPOT_URL=https://packages.example.com \
 PKGDEPOT_OIDC_ISSUER=https://id.example.com \
-PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE=client-{client_id} \
 pkgdepot serve
 ```
 
@@ -228,15 +230,12 @@ sudo pacman -Syu example
 | `PKGDEPOT_OIDC_AUDIENCE` | `PKGDEPOT_URL` | Expected access-token audience. |
 | `PKGDEPOT_OIDC_JWT_ALGORITHMS` | `RS256` | Allowed access-token signing algorithms. |
 | `PKGDEPOT_OIDC_JWT_CACHE_LIFETIME` | `15m` | Maximum signing-key-set trust lifetime. |
-| `PKGDEPOT_ROLE_CLAIM` | `pkgdepot_roles` | Access-token claim containing roles. |
-| `PKGDEPOT_ROLE_SCOPES` | Built-in admin/publisher mapping | JSON object mapping roles to operation scopes. |
-| `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` | Disabled | Client-credentials subject format containing one `{client_id}`. |
 
 ### CLI OAuth
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `PKGDEPOT_OAUTH_CLIENT_ID` | Empty | Required for client credentials and delegated clients without CIMD. HTTPS delegated clients with CIMD derive the server metadata URL when it is empty. |
+| `PKGDEPOT_OAUTH_CLIENT_ID` | Empty | Required for client credentials and delegated clients without CIMD. HTTPS delegated clients with CIMD derive the publisher or admin CIMD URL. |
 | `PKGDEPOT_OAUTH_CLIENT_SECRET` | Empty | Enables client-credentials authentication; omit for delegated login. |
 | `PKGDEPOT_OAUTH_ISSUER` | Required with a client secret | Expected issuer pin before credentials are sent. |
 

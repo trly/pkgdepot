@@ -23,6 +23,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/trly/pkgdepot/internal/api"
+	"github.com/trly/pkgdepot/internal/auth"
 	"github.com/trly/pkgdepot/internal/cimd"
 	"github.com/trly/pkgdepot/internal/oauthcache"
 	"github.com/trly/pkgdepot/internal/urlpolicy"
@@ -42,7 +43,9 @@ type Client struct {
 	discoverErr    error
 	resourceURL    string
 	issuer         string
-	clientID       string
+	publisherID    string
+	adminID        string
+	activeClientID string
 	endpoint       oauth2.Endpoint
 	provider       *oidc.Provider
 	resourceScopes []string
@@ -59,18 +62,61 @@ type OAuthOptions struct {
 	ClientID            string
 	ClientSecret        string
 	ExpectedIssuer      string
+	Access              string
 	AuthorizationPrompt func(string)
 }
 
-// LoopbackPorts lists the TCP ports the CLI may bind for the OAuth loopback
-// callback. The authorization-code flow tries each port in order and uses the
-// first one that is available. Every port must be registered as a redirect URI
-// in the OIDC provider: http://127.0.0.1:<port>/oauth/callback.
-var LoopbackPorts = cimd.LoopbackPorts
+const (
+	AccessPublisher = "publisher"
+	AccessAdmin     = "admin"
+)
 
-// LoopbackRedirectURLs returns the full set of redirect URIs that the CLI may
-// use during the authorization-code flow. Register all of them in the OIDC
-// provider so that any available port is accepted.
+func selectAccess(access string, scopes []string) (string, error) {
+	if access == "" {
+		for _, scope := range scopes {
+			if scope != "package:publish" {
+				return AccessAdmin, nil
+			}
+		}
+		return AccessPublisher, nil
+	}
+	if access != AccessPublisher && access != AccessAdmin {
+		return "", fmt.Errorf("invalid OAuth access profile %q (want publisher or admin)", access)
+	}
+	if access == AccessPublisher {
+		for _, scope := range scopes {
+			if scope != auth.ScopePublish {
+				return "", fmt.Errorf("scope %q requires the admin OAuth access profile", scope)
+			}
+		}
+	}
+	return access, nil
+}
+
+func accessForScope(scope string) string {
+	if scope == auth.ScopePublish {
+		return AccessPublisher
+	}
+	return AccessAdmin
+}
+
+func (c *Client) clientIDForAccess(access string) string {
+	if access == AccessAdmin {
+		return c.adminID
+	}
+	return c.publisherID
+}
+
+func (c *Client) clientIDs() []string {
+	ids := []string{c.publisherID}
+	if c.adminID != c.publisherID {
+		ids = append(ids, c.adminID)
+	}
+	return ids
+}
+
+// LoopbackRedirectURLs returns the portless redirect URIs accepted by the
+// authorization server. The CLI binds an ephemeral port for each transaction.
 func LoopbackRedirectURLs() []string {
 	return cimd.RedirectURLs()
 }
@@ -123,11 +169,20 @@ func (c *Client) Login(ctx context.Context, scopes []string) (*oauth2.Token, err
 	if c.OAuth.ClientSecret != "" {
 		return nil, errors.New("delegated login requires PKGDEPOT_OAUTH_CLIENT_SECRET to be unset")
 	}
+	access, err := selectAccess(c.OAuth.Access, scopes)
+	if err != nil {
+		return nil, err
+	}
+	c.activeClientID = c.clientIDForAccess(access)
 	if err := c.discover(); err != nil {
 		return nil, err
 	}
-	identityConfig := oauth2.Config{ClientID: c.clientID, Endpoint: c.endpoint, Scopes: []string{"openid", "profile", "email"}}
-	identity, err := c.authorizeCode(ctx, identityConfig, "")
+	c.activeClientID = c.clientIDForAccess(access)
+	if access == AccessPublisher {
+		c.resourceScopes = []string{auth.ScopePublish}
+	}
+	identityConfig := oauth2.Config{ClientID: c.activeClientID, Endpoint: c.endpoint, Scopes: []string{"openid", "profile", "email"}}
+	identity, err := c.authorizeCode(ctx, identityConfig, "", true)
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +199,9 @@ func (c *Client) Login(ctx context.Context, scopes []string) (*oauth2.Token, err
 		return nil, errors.New("at least one OAuth scope must be selected")
 	}
 	config := oauth2.Config{
-		ClientID: c.clientID,
+		ClientID: c.activeClientID,
 		Endpoint: c.endpoint,
-		Scopes:   append([]string{"openid"}, scopes...),
+		Scopes:   append([]string(nil), scopes...),
 	}
 	authContext := context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
 	token, err := (&authorizationCodeTokenSource{
@@ -172,7 +227,12 @@ func (c *Client) Logout() error {
 	if c.tokenStore == nil {
 		return nil
 	}
-	return c.tokenStore.Delete(c.cacheKey())
+	for _, clientID := range c.clientIDs() {
+		if err := c.tokenStore.Delete(c.cacheKey(clientID)); err != nil && !errors.Is(err, oauthcache.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) Publish(ctx context.Context, repository, architecture, packagePath, signaturePath string) (api.Package, error) {
@@ -386,13 +446,16 @@ func (c *Client) tokenSource(scope string) (oauth2.TokenSource, error) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if source := c.tokenSources[scope]; source != nil {
+	access := accessForScope(scope)
+	clientID := c.clientIDForAccess(access)
+	key := access + "\x00" + scope
+	if source := c.tokenSources[key]; source != nil {
 		return source, nil
 	}
 
 	if c.OAuth.ClientSecret != "" {
 		config := clientcredentials.Config{
-			ClientID:       c.clientID,
+			ClientID:       clientID,
 			ClientSecret:   c.OAuth.ClientSecret,
 			TokenURL:       c.endpoint.TokenURL,
 			Scopes:         []string{scope},
@@ -400,27 +463,36 @@ func (c *Client) tokenSource(scope string) (oauth2.TokenSource, error) {
 			EndpointParams: url.Values{"resource": {c.resourceURL}},
 		}
 		source := oauth2.ReuseTokenSourceWithExpiry(nil, config.TokenSource(c.oauthContext()), 30*time.Second)
-		c.tokenSources[scope] = source
+		c.tokenSources[key] = source
 		return source, nil
 	}
 
 	config := oauth2.Config{
-		ClientID: c.clientID,
+		ClientID: clientID,
 		Endpoint: c.endpoint,
-		Scopes:   []string{"openid", scope},
+		Scopes:   []string{scope},
 	}
 	if c.tokenStore != nil {
-		if record, err := c.tokenStore.Get(c.cacheKey()); err == nil {
+		cacheKey := c.cacheKey(clientID)
+		record, err := c.tokenStore.Get(cacheKey)
+		if errors.Is(err, oauthcache.ErrNotFound) && access == AccessPublisher && c.adminID != c.publisherID {
+			clientID = c.adminID
+			cacheKey = c.cacheKey(clientID)
+			record, err = c.tokenStore.Get(cacheKey)
+		}
+		if err == nil {
+			config.ClientID = clientID
 			if !contains(record.Scopes, scope) {
 				return nil, fmt.Errorf("cached delegated login does not include %s; run pkgdepot login to update selected scopes", scope)
 			}
 			source := &cachedTokenSource{
-				client: c,
-				config: config,
-				key:    c.cacheKey(),
-				scopes: record.Scopes,
+				client:   c,
+				config:   config,
+				clientID: clientID,
+				key:      cacheKey,
+				scopes:   record.Scopes,
 			}
-			c.tokenSources[scope] = source
+			c.tokenSources[key] = source
 			return source, nil
 		} else if !errors.Is(err, oauthcache.ErrNotFound) {
 			return nil, fmt.Errorf("read cached delegated login: %w", err)
@@ -434,10 +506,11 @@ func (c *Client) tokenSource(scope string) (oauth2.TokenSource, error) {
 			resource:            c.resourceURL,
 			authorizationPrompt: c.OAuth.AuthorizationPrompt,
 		},
-		client: c,
-		scopes: []string{scope},
+		client:   c,
+		clientID: clientID,
+		scopes:   []string{scope},
 	}, 30*time.Second)
-	c.tokenSources[scope] = source
+	c.tokenSources[key] = source
 	return source, nil
 }
 
@@ -515,7 +588,7 @@ func (c *Client) doDiscover() error {
 		if c.OAuth.ClientSecret != "" {
 			return errors.New("OAuth client ID is required for client credentials (set PKGDEPOT_OAUTH_CLIENT_ID)")
 		}
-		clientID, err = cimd.MetadataURL(c.BaseURL)
+		clientID, err = cimd.MetadataURLForPath(c.BaseURL, cimd.PublisherMetadataPath)
 		if err != nil {
 			return fmt.Errorf("derive CIMD client ID: %w; use an HTTPS PKGDEPOT_URL or set PKGDEPOT_OAUTH_CLIENT_ID", err)
 		}
@@ -526,7 +599,15 @@ func (c *Client) doDiscover() error {
 
 	c.resourceURL = resourceURL
 	c.issuer = issuer
-	c.clientID = clientID
+	if c.OAuth.ClientID != "" {
+		c.publisherID, c.adminID = clientID, clientID
+	} else {
+		c.publisherID = clientID
+		c.adminID, err = cimd.MetadataURLForPath(c.BaseURL, cimd.AdminMetadataPath)
+		if err != nil {
+			return fmt.Errorf("derive admin CIMD client ID: %w", err)
+		}
+	}
 	c.endpoint = endpoint
 	c.provider = provider
 	c.resourceScopes = append([]string(nil), resource.ScopesSupported...)
@@ -579,31 +660,37 @@ func (t *resourceIndicatorTransport) RoundTrip(req *http.Request) (*http.Respons
 	return base.RoundTrip(req)
 }
 
-func (c *Client) cacheKey() string {
-	return c.resourceURL + "\x00" + c.clientID + "\x00" + c.issuer
+func (c *Client) cacheKey(clientID string) string {
+	return c.resourceURL + "\x00" + clientID + "\x00" + c.issuer
 }
 
 func (c *Client) saveToken(token *oauth2.Token, scopes []string) error {
+	return c.saveTokenFor(c.activeClientID, token, scopes)
+}
+
+func (c *Client) saveTokenFor(clientID string, token *oauth2.Token, scopes []string) error {
 	if c.tokenStore == nil {
 		return errors.New("OAuth token store is not configured")
 	}
-	return c.tokenStore.Put(c.cacheKey(), oauthcache.Record{
+	return c.tokenStore.Put(c.cacheKey(clientID), oauthcache.Record{
 		Token:  *token,
 		Scopes: append([]string(nil), scopes...),
 	})
 }
 
 type persistingTokenSource struct {
-	source oauth2.TokenSource
-	client *Client
-	scopes []string
+	source   oauth2.TokenSource
+	client   *Client
+	clientID string
+	scopes   []string
 }
 
 type cachedTokenSource struct {
-	client *Client
-	config oauth2.Config
-	key    string
-	scopes []string
+	client   *Client
+	config   oauth2.Config
+	clientID string
+	key      string
+	scopes   []string
 }
 
 func (s *cachedTokenSource) Token() (*oauth2.Token, error) {
@@ -632,7 +719,7 @@ func (s *cachedTokenSource) Token() (*oauth2.Token, error) {
 			return nil, err
 		}
 	}
-	if err := s.client.saveToken(token, grantedScopes(token, s.scopes)); err != nil {
+	if err := s.client.saveTokenFor(s.clientID, token, grantedScopes(token, s.scopes)); err != nil {
 		return nil, fmt.Errorf("cache OAuth token: %w", err)
 	}
 	return token, nil
@@ -643,7 +730,7 @@ func (s *persistingTokenSource) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.client.saveToken(token, grantedScopes(token, s.scopes)); err != nil {
+	if err := s.client.saveTokenFor(s.clientID, token, grantedScopes(token, s.scopes)); err != nil {
 		return nil, fmt.Errorf("cache OAuth token: %w", err)
 	}
 	return token, nil
@@ -732,90 +819,10 @@ type authenticatedUser struct {
 	Picture           string `json:"picture"`
 }
 
-// authorizeCode performs one authorization-code transaction and returns the
-// token together with the nonce used for its OIDC identity check.
-func (c *Client) authorizeCode(ctx context.Context, config oauth2.Config, resource string) (authorizationCodeResult, error) {
-	state, err := randomURLValue()
-	if err != nil {
-		return authorizationCodeResult{}, fmt.Errorf("generate OAuth state: %w", err)
-	}
-	nonce, err := randomURLValue()
-	if err != nil {
-		return authorizationCodeResult{}, fmt.Errorf("generate OIDC nonce: %w", err)
-	}
-	verifier := oauth2.GenerateVerifier()
-	listener, err := listenLoopback()
-	if err != nil {
-		return authorizationCodeResult{}, err
-	}
-	defer listener.Close()
-	redirectURL := fmt.Sprintf("http://%s/oauth/callback", listener.Addr().String())
-	config.RedirectURL = redirectURL
-	callback := make(chan authorizationCallback, 1)
-	var callbackOnce sync.Once
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/oauth/callback" || request.Method != http.MethodGet {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		result := authorizationCallback{code: request.URL.Query().Get("code")}
-		if request.URL.Query().Get("state") != state {
-			http.Error(w, "OAuth callback state did not match", http.StatusBadRequest)
-			return
-		} else if callbackError := request.URL.Query().Get("error"); callbackError != "" {
-			result.err = fmt.Errorf("OAuth authorization failed: %s", callbackError)
-		} else if result.code == "" {
-			result.err = errors.New("OAuth callback did not include an authorization code")
-		}
-		accepted := false
-		callbackOnce.Do(func() {
-			accepted = true
-			callback <- result
-		})
-		if !accepted {
-			http.Error(w, "OAuth callback has already been used", http.StatusBadRequest)
-			return
-		}
-		if result.err != nil {
-			http.Error(w, result.err.Error(), http.StatusBadRequest)
-			return
-		}
-		_, _ = io.WriteString(w, "Authentication complete. You can close this window.\n")
-	})}
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.Serve(listener) }()
-	defer server.Close()
-	authOptions := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier), oidc.Nonce(nonce)}
-	if resource != "" {
-		authOptions = append(authOptions, oauth2.SetAuthURLParam("resource", resource))
-	}
-	authorizationURL := config.AuthCodeURL(state, authOptions...)
-	if c.OAuth.AuthorizationPrompt != nil {
-		c.OAuth.AuthorizationPrompt(authorizationURL)
-	}
-	select {
-	case result := <-callback:
-		if result.err != nil {
-			return authorizationCodeResult{}, result.err
-		}
-		exchangeOptions := []oauth2.AuthCodeOption{oauth2.VerifierOption(verifier)}
-		if resource != "" {
-			exchangeOptions = append(exchangeOptions, oauth2.SetAuthURLParam("resource", resource))
-		}
-		exchangeContext := context.WithValue(ctx, oauth2.HTTPClient, c.HTTP)
-		token, err := config.Exchange(exchangeContext, result.code, exchangeOptions...)
-		if err != nil {
-			return authorizationCodeResult{}, fmt.Errorf("exchange OAuth authorization code: %w", err)
-		}
-		return authorizationCodeResult{token: token, nonce: nonce}, nil
-	case <-ctx.Done():
-		return authorizationCodeResult{}, ctx.Err()
-	case err := <-serveErr:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return authorizationCodeResult{}, fmt.Errorf("serve OAuth callback: %w", err)
-		}
-		return authorizationCodeResult{}, errors.New("OAuth callback server stopped unexpectedly")
-	}
+// authorizeCode performs one authorization-code transaction. It uses a nonce
+// only for the identity transaction, whose ID token is verified by the caller.
+func (c *Client) authorizeCode(ctx context.Context, config oauth2.Config, resource string, useNonce bool) (authorizationCodeResult, error) {
+	return runAuthorizationCode(ctx, c.HTTP, c.OAuth.AuthorizationPrompt, config, resource, useNonce)
 }
 
 func (c *Client) identity(token *oauth2.Token, nonce string) (authenticatedUser, error) {
@@ -826,7 +833,7 @@ func (c *Client) identity(token *oauth2.Token, nonce string) (authenticatedUser,
 	if c.provider == nil {
 		return authenticatedUser{}, errors.New("OIDC provider metadata is unavailable")
 	}
-	verifier := c.provider.Verifier(&oidc.Config{ClientID: c.clientID})
+	verifier := c.provider.Verifier(&oidc.Config{ClientID: c.activeClientID})
 	idToken, err := verifier.Verify(c.ctx, value)
 	if err != nil {
 		return authenticatedUser{}, fmt.Errorf("verify OIDC ID token: %w", err)
@@ -869,6 +876,8 @@ func (c *Client) identity(token *oauth2.Token, nonce string) (authenticatedUser,
 }
 
 func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, requested []string) ([]string, error) {
+	selectionContext, cancel := context.WithTimeout(ctx, oauthCallbackTimeout)
+	defer cancel()
 	available := c.resourceScopes
 	if len(available) == 0 {
 		available = requested
@@ -890,11 +899,12 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 		return nil, fmt.Errorf("generate scope selector token: %w", err)
 	}
 	result := make(chan []string, 1)
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/scope" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src https: http://127.0.0.1 http://localhost; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.Method == http.MethodPost {
@@ -922,15 +932,32 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 				http.Error(w, "select at least one permission", http.StatusBadRequest)
 				return
 			}
-			result <- chosen
+			select {
+			case result <- chosen:
+			default:
+				http.Error(w, "scope selection has already been submitted", http.StatusConflict)
+				return
+			}
 			_, _ = io.WriteString(w, "Permissions selected. You can close this window.\n")
+			return
+		} else if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		providedToken := r.URL.Query().Get("token")
+		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(csrfToken)) != 1 {
+			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, scopePage(user, available, selected, csrfToken))
 	})}
 	go server.Serve(listener)
-	defer server.Close()
+	defer func() {
+		shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownContext)
+	}()
 	pageURL := "http://" + listener.Addr().String() + "/scope?token=" + url.QueryEscape(csrfToken)
 	if c.OAuth.AuthorizationPrompt != nil {
 		c.OAuth.AuthorizationPrompt(pageURL)
@@ -938,8 +965,11 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 	select {
 	case selected := <-result:
 		return selected, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-selectionContext.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errors.New("scope selection timed out")
 	}
 }
 
@@ -1036,100 +1066,156 @@ func (s *authorizationCodeTokenSource) Token() (*oauth2.Token, error) {
 	return token, err
 }
 
-// listenLoopback tries each port in LoopbackPorts and returns a listener on the
-// first one that is available. If every port is occupied it returns an error
-// listing them all so the user knows exactly which redirect URIs to free.
 func listenLoopback() (net.Listener, error) {
-	for _, port := range LoopbackPorts {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		listener, err := net.Listen("tcp", addr)
+	for _, endpoint := range []struct{ network, address string }{
+		{network: "tcp4", address: "127.0.0.1:0"},
+		{network: "tcp6", address: "[::1]:0"},
+	} {
+		listener, err := net.Listen(endpoint.network, endpoint.address)
 		if err == nil {
 			return listener, nil
 		}
 	}
-	return nil, fmt.Errorf("all loopback ports %v are in use; free one for the OAuth callback", LoopbackPorts)
+	return nil, errors.New("unable to bind an IPv4 or IPv6 loopback OAuth callback listener")
 }
 
 func (s *authorizationCodeTokenSource) authorize() (*oauth2.Token, error) {
-	state, err := randomURLValue()
-	if err != nil {
-		return nil, fmt.Errorf("generate OAuth state: %w", err)
+	httpClient := http.DefaultClient
+	if s.client != nil && s.client.HTTP != nil {
+		httpClient = s.client.HTTP
 	}
-	verifier := oauth2.GenerateVerifier()
-
-	listener, err := listenLoopback()
+	result, err := runAuthorizationCode(s.ctx, httpClient, s.authorizationPrompt, s.config, s.resource, false)
 	if err != nil {
 		return nil, err
 	}
-	defer listener.Close()
+	return result.token, nil
+}
 
-	loopbackRedirectURL := fmt.Sprintf("http://%s/oauth/callback", listener.Addr().String())
-	s.config.RedirectURL = loopbackRedirectURL
-	server := &http.Server{}
+const oauthCallbackTimeout = 5 * time.Minute
+
+func runAuthorizationCode(ctx context.Context, httpClient *http.Client, prompt func(string), config oauth2.Config, resource string, useNonce bool) (authorizationCodeResult, error) {
+	transactionContext, cancel := context.WithTimeout(ctx, oauthCallbackTimeout)
+	defer cancel()
+	state, err := randomURLValue()
+	if err != nil {
+		return authorizationCodeResult{}, fmt.Errorf("generate OAuth state: %w", err)
+	}
+	verifier := oauth2.GenerateVerifier()
+	nonce := ""
+	if useNonce {
+		nonce, err = randomURLValue()
+		if err != nil {
+			return authorizationCodeResult{}, fmt.Errorf("generate OIDC nonce: %w", err)
+		}
+	}
+	listener, err := listenLoopback()
+	if err != nil {
+		return authorizationCodeResult{}, err
+	}
+	defer listener.Close()
+	redirectURL := fmt.Sprintf("http://%s/oauth/callback", listener.Addr().String())
+	config.RedirectURL = redirectURL
 	callback := make(chan authorizationCallback, 1)
-	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/oauth/callback" {
-			http.NotFound(w, request)
-			return
-		}
-		if request.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		result := authorizationCallback{code: request.URL.Query().Get("code")}
-		if request.URL.Query().Get("state") != state {
-			http.Error(w, "OAuth callback state did not match", http.StatusBadRequest)
-			return
-		}
-		if callbackError := request.URL.Query().Get("error"); callbackError != "" {
-			result.err = fmt.Errorf("OAuth authorization failed: %s", callbackError)
-		} else if result.code == "" {
-			result.err = errors.New("OAuth callback did not include an authorization code")
-		}
-		select {
-		case callback <- result:
+	var callbackOnce sync.Once
+	server := &http.Server{
+		ReadHeaderTimeout: 10 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.URL.Path != "/oauth/callback" || request.Method != http.MethodGet {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			query := request.URL.Query()
+			if query.Get("state") != state {
+				http.Error(w, "OAuth callback state did not match", http.StatusBadRequest)
+				return
+			}
+			result := authorizationCallback{code: query.Get("code")}
+			if callbackError := query.Get("error"); callbackError != "" {
+				result.err = oauthCallbackError(callbackError, query.Get("error_description"))
+			} else if result.code == "" {
+				result.err = errors.New("OAuth callback did not include an authorization code")
+			}
+			accepted := false
+			callbackOnce.Do(func() {
+				accepted = true
+				callback <- result
+			})
+			if !accepted {
+				http.Error(w, "OAuth callback has already been received", http.StatusConflict)
+				return
+			}
 			if result.err != nil {
 				http.Error(w, result.err.Error(), http.StatusBadRequest)
 				return
 			}
 			_, _ = io.WriteString(w, "Authentication complete. You can close this window.\n")
-		default:
-			http.Error(w, "OAuth callback has already been received", http.StatusConflict)
-		}
-	})
+		}),
+	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-	defer server.Close()
-
-	authorizationURL := s.config.AuthCodeURL(state,
-		oauth2.S256ChallengeOption(verifier),
-		oauth2.SetAuthURLParam("resource", s.resource),
-	)
-	if s.authorizationPrompt != nil {
-		s.authorizationPrompt(authorizationURL)
+	defer func() {
+		shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownContext)
+	}()
+	authOptions := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier)}
+	if useNonce {
+		authOptions = append(authOptions, oidc.Nonce(nonce))
 	}
-
+	if resource != "" {
+		authOptions = append(authOptions, oauth2.SetAuthURLParam("resource", resource))
+	}
+	if prompt != nil {
+		prompt(config.AuthCodeURL(state, authOptions...))
+	}
 	select {
 	case result := <-callback:
 		if result.err != nil {
-			return nil, result.err
+			return authorizationCodeResult{}, result.err
 		}
-		token, err := s.config.Exchange(s.ctx, result.code,
-			oauth2.VerifierOption(verifier),
-			oauth2.SetAuthURLParam("resource", s.resource),
-		)
+		exchangeOptions := []oauth2.AuthCodeOption{oauth2.VerifierOption(verifier)}
+		if resource != "" {
+			exchangeOptions = append(exchangeOptions, oauth2.SetAuthURLParam("resource", resource))
+		}
+		exchangeContext := context.WithValue(transactionContext, oauth2.HTTPClient, httpClient)
+		token, err := config.Exchange(exchangeContext, result.code, exchangeOptions...)
 		if err != nil {
-			return nil, fmt.Errorf("exchange OAuth authorization code: %w", err)
+			return authorizationCodeResult{}, fmt.Errorf("exchange OAuth authorization code: %w", err)
 		}
-		return token, nil
-	case <-s.ctx.Done():
-		return nil, s.ctx.Err()
+		return authorizationCodeResult{token: token, nonce: nonce}, nil
+	case <-transactionContext.Done():
+		if ctx.Err() != nil {
+			return authorizationCodeResult{}, ctx.Err()
+		}
+		return authorizationCodeResult{}, errors.New("OAuth callback timed out")
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return nil, fmt.Errorf("serve OAuth callback: %w", err)
+			return authorizationCodeResult{}, fmt.Errorf("serve OAuth callback: %w", err)
 		}
-		return nil, errors.New("OAuth callback server stopped unexpectedly")
+		return authorizationCodeResult{}, errors.New("OAuth callback server stopped unexpectedly")
 	}
+}
+
+func oauthCallbackError(code, description string) error {
+	code = sanitizeOAuthText(code, 128)
+	description = sanitizeOAuthText(description, 512)
+	if description == "" {
+		return fmt.Errorf("OAuth authorization failed: %s", code)
+	}
+	return fmt.Errorf("OAuth authorization failed: %s: %s", code, description)
+}
+
+func sanitizeOAuthText(value string, limit int) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
+	if len(value) > limit {
+		return value[:limit]
+	}
+	return value
 }
 
 type authorizationCallback struct {
