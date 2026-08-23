@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -883,6 +884,10 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 		return nil, err
 	}
 	defer listener.Close()
+	csrfToken, err := randomURLValue()
+	if err != nil {
+		return nil, fmt.Errorf("generate scope selector token: %w", err)
+	}
 	result := make(chan []string, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/scope" {
@@ -890,9 +895,15 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 			return
 		}
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src https: http://127.0.0.1 http://localhost; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.Method == http.MethodPost {
 			if err := r.ParseForm(); err != nil {
 				http.Error(w, "invalid scope selection", http.StatusBadRequest)
+				return
+			}
+			providedToken := r.FormValue("csrf_token")
+			if subtle.ConstantTimeCompare([]byte(providedToken), []byte(csrfToken)) != 1 {
+				http.Error(w, "invalid scope selection token", http.StatusBadRequest)
 				return
 			}
 			values := r.Form["scope"]
@@ -915,11 +926,11 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, scopePage(user, available, selected))
+		_, _ = io.WriteString(w, scopePage(user, available, selected, csrfToken))
 	})}
 	go server.Serve(listener)
 	defer server.Close()
-	pageURL := "http://" + listener.Addr().String() + "/scope"
+	pageURL := "http://" + listener.Addr().String() + "/scope?token=" + url.QueryEscape(csrfToken)
 	if c.OAuth.AuthorizationPrompt != nil {
 		c.OAuth.AuthorizationPrompt(pageURL)
 	}
@@ -931,7 +942,7 @@ func (c *Client) selectScopes(ctx context.Context, user authenticatedUser, reque
 	}
 }
 
-func scopePage(user authenticatedUser, scopes []string, selected map[string]bool) string {
+func scopePage(user authenticatedUser, scopes []string, selected map[string]bool, csrfToken string) string {
 	name := user.DisplayName
 	if name == "" {
 		name = user.Name
@@ -953,7 +964,7 @@ func scopePage(user authenticatedUser, scopes []string, selected map[string]bool
 	if user.Email != "" {
 		fmt.Fprintf(&b, "<p>%s</p>", html.EscapeString(user.Email))
 	}
-	b.WriteString("<form method=post><h2>Select permissions</h2>")
+	fmt.Fprintf(&b, "<form method=post><input type=hidden name=csrf_token value=\"%s\"><h2>Select permissions</h2>", html.EscapeString(csrfToken))
 	for _, scope := range scopes {
 		checked := ""
 		if selected[scope] {
