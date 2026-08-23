@@ -104,6 +104,9 @@ configured for the provider's subject format:
 | --- | --- |
 | Publish a package | `package:publish` |
 | Remove a package | `package:remove` |
+| Create a repository | `repo:create` |
+| Remove a repository | `repo:remove` |
+| Rename a repository | `repo:rename` |
 
 The OIDC/OAuth provider must satisfy every item below:
 
@@ -129,9 +132,9 @@ The OIDC/OAuth provider must satisfy every item below:
   addresses for local development.
 
 pkgdepot has no local users, groups, or OAuth clients. It owns the role-to-scope
-permission policy; the default mapping grants both scopes to `admin` and only
-`package:publish` to `publisher`. Opaque access tokens and token introspection
-are not supported.
+permission policy; the default mapping grants all mutation scopes to `admin`
+and only `package:publish` to `publisher`. Opaque access tokens and token
+introspection are not supported.
 
 ### RBAC Configuration
 
@@ -155,7 +158,7 @@ claim, when present, must be a JSON string array, for example:
 The built-in policy is equivalent to:
 
 ```sh
-PKGDEPOT_ROLE_SCOPES='{"admin":["package:publish","package:remove"],"publisher":["package:publish"]}'
+PKGDEPOT_ROLE_SCOPES='{"admin":["package:publish","package:remove","repo:create","repo:remove","repo:rename"],"publisher":["package:publish"]}'
 ```
 
 Set `PKGDEPOT_ROLE_CLAIM` when the provider uses another claim name. Setting
@@ -284,7 +287,7 @@ pkgdepot package remove stable example
 | `PKGDEPOT_OIDC_JWT_ALGORITHMS` | `RS256` | Comma- or space-separated signing algorithms allowed by the provider. |
 | `PKGDEPOT_OIDC_JWT_CACHE_LIFETIME` | `15m` | Maximum time a successfully fetched OIDC signing-key set is trusted before refresh. |
 | `PKGDEPOT_ROLE_CLAIM` | `pkgdepot_roles` | Access-token claim containing the token subject's roles as a JSON string array. |
-| `PKGDEPOT_ROLE_SCOPES` | `{"admin":["package:publish","package:remove"],"publisher":["package:publish"]}` | JSON object mapping roles to permitted scopes. |
+| `PKGDEPOT_ROLE_SCOPES` | `{"admin":["package:publish","package:remove","repo:create","repo:remove","repo:rename"],"publisher":["package:publish"]}` | JSON object mapping roles to permitted scopes. |
 | `PKGDEPOT_CLIENT_CREDENTIALS_SUBJECT_TEMPLATE` | Empty (disabled) | Subject template for client-credentials scope authorization. Must contain exactly one `{client_id}` placeholder, expanded to the signed `client_id` claim. For example, `client-{client_id}` matches Pocket ID's subject format. Empty disables scope-only authorization. |
 | `PKGDEPOT_OAUTH_CLIENT_ID` | CIMD URL derived from HTTPS `PKGDEPOT_URL` | Pre-registered OIDC client ID override; required for delegated login when `PKGDEPOT_URL` is HTTP. |
 | `PKGDEPOT_OAUTH_CLIENT_SECRET` | Empty | Enables client-credentials automation; omit for delegated CLI login. |

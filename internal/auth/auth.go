@@ -17,9 +17,12 @@ var (
 )
 
 const (
-	ScopePublish     = "package:publish"
-	ScopeRemove      = "package:remove"
-	DefaultRoleClaim = "pkgdepot_roles"
+	ScopePublish          = "package:publish"
+	ScopeRemove           = "package:remove"
+	ScopeRepositoryCreate = "repo:create"
+	ScopeRepositoryRemove = "repo:remove"
+	ScopeRepositoryRename = "repo:rename"
+	DefaultRoleClaim      = "pkgdepot_roles"
 )
 
 // Claims are the access-token claims relevant to a protected resource server.
@@ -33,7 +36,7 @@ type Claims struct {
 // DefaultRoleScopes returns the built-in roles for a new PKGdepot server.
 func DefaultRoleScopes() map[string][]string {
 	return map[string][]string{
-		"admin":     {ScopePublish, ScopeRemove},
+		"admin":     {ScopePublish, ScopeRemove, ScopeRepositoryCreate, ScopeRepositoryRemove, ScopeRepositoryRename},
 		"publisher": {ScopePublish},
 	}
 }

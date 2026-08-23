@@ -106,6 +106,9 @@ func New(repositories *repository.Service, canonicalURL string, options ...Optio
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{resource...}", server.resourceMetadata)
 	mux.HandleFunc("GET /repos/{repository}/{architecture}/{filename}", server.download)
 	mux.HandleFunc("GET /api/v1/repositories", server.listRepositories)
+	mux.Handle("POST /api/v1/repositories/{repository}", server.authenticate(auth.ScopeRepositoryCreate, http.HandlerFunc(server.createRepository)))
+	mux.Handle("DELETE /api/v1/repositories/{repository}", server.authenticate(auth.ScopeRepositoryRemove, http.HandlerFunc(server.removeRepository)))
+	mux.Handle("PATCH /api/v1/repositories/{repository}", server.authenticate(auth.ScopeRepositoryRename, http.HandlerFunc(server.renameRepository)))
 	mux.HandleFunc("GET /api/v1/repositories/{repository}/{architecture}/packages", server.list)
 	mux.Handle("POST /api/v1/repositories/{repository}/{architecture}/packages", server.authenticate(auth.ScopePublish, http.HandlerFunc(server.publish)))
 	mux.Handle("DELETE /api/v1/repositories/{repository}/{architecture}/packages/{package}", server.authenticate(auth.ScopeRemove, http.HandlerFunc(server.remove)))
@@ -440,6 +443,45 @@ func (s *Server) listRepositories(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) createRepository(w http.ResponseWriter, r *http.Request) {
+	repositoryName := r.PathValue("repository")
+	if err := s.repositories.Create(repositoryName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, api.Repository{Name: repositoryName, Architectures: []string{}})
+}
+
+func (s *Server) removeRepository(w http.ResponseWriter, r *http.Request) {
+	if err := s.repositories.RemoveRepository(r.PathValue("repository")); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, repository.ErrRepositoryNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) renameRepository(w http.ResponseWriter, r *http.Request) {
+	var request api.RenameRepositoryRequest
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	if err := decoder.Decode(&request); err != nil || request.Name == "" {
+		writeError(w, http.StatusBadRequest, "request body must contain a non-empty name")
+		return
+	}
+	if err := s.repositories.Rename(r.PathValue("repository"), request.Name); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, repository.ErrRepositoryNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {

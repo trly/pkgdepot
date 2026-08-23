@@ -82,9 +82,15 @@ func resourceServerWithValidator(cfg config.Config, validator auth.Validator) *a
 	return &auth.ResourceServer{
 		Validator: validator,
 		Metadata: auth.ResourceMetadata{
-			Resource:               auth.NormalizeResourceIdentifier(cfg.URL),
-			AuthorizationServers:   []string{cfg.Auth.Issuer},
-			ScopesSupported:        []string{auth.ScopePublish, auth.ScopeRemove},
+			Resource:             auth.NormalizeResourceIdentifier(cfg.URL),
+			AuthorizationServers: []string{cfg.Auth.Issuer},
+			ScopesSupported: []string{
+				auth.ScopePublish,
+				auth.ScopeRemove,
+				auth.ScopeRepositoryCreate,
+				auth.ScopeRepositoryRemove,
+				auth.ScopeRepositoryRename,
+			},
 			BearerMethodsSupported: []string{"header"},
 		},
 		Authorize: func(claims auth.Claims, scope, _, _ string) bool {

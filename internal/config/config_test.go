@@ -25,7 +25,7 @@ func TestFromEnvLoadsOIDCConfiguration(t *testing.T) {
 	if cfg.Auth.RoleClaim != "pkgdepot_roles" {
 		t.Fatalf("role claim = %q", cfg.Auth.RoleClaim)
 	}
-	wantRoleScopes := map[string][]string{"admin": {"package:publish", "package:remove"}, "publisher": {"package:publish"}}
+	wantRoleScopes := map[string][]string{"admin": {"package:publish", "package:remove", "repo:create", "repo:remove", "repo:rename"}, "publisher": {"package:publish"}}
 	if !reflect.DeepEqual(cfg.Auth.RoleScopes, wantRoleScopes) {
 		t.Fatalf("role scopes = %#v, want %#v", cfg.Auth.RoleScopes, wantRoleScopes)
 	}

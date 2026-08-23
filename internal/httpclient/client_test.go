@@ -686,6 +686,59 @@ func TestLoopbackRedirectURLsCoversAllPorts(t *testing.T) {
 	}
 }
 
+func TestRepositoryClientLifecycleMethods(t *testing.T) {
+	var requests []string
+	server := oauthServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/token":
+			writeJSON(w, `{"access_token":"access","token_type":"Bearer","expires_in":3600}`)
+		case "/api/v1/repositories":
+			writeJSON(w, `[{"name":"stable","architectures":[]}]`)
+		case "/api/v1/repositories/stable":
+			if r.Method == http.MethodPatch {
+				body, _ := io.ReadAll(r.Body)
+				if string(body) != `{"name":"testing"}` {
+					t.Errorf("rename body = %s", body)
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	client := authenticatedClient(context.Background(), server.URL)
+
+	repositories, err := client.Repositories(context.Background())
+	if err != nil || len(repositories) != 1 || repositories[0].Name != "stable" {
+		t.Fatalf("Repositories() = %#v, %v", repositories, err)
+	}
+	if err := client.CreateRepository(context.Background(), "stable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RenameRepository(context.Background(), "stable", "testing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveRepository(context.Background(), "stable"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"GET /api/v1/repositories", "POST /api/v1/repositories/stable", "PATCH /api/v1/repositories/stable", "DELETE /api/v1/repositories/stable"} {
+		if !containsRequest(requests, want) {
+			t.Fatalf("requests = %v, missing %q", requests, want)
+		}
+	}
+}
+
+func containsRequest(requests []string, want string) bool {
+	for _, request := range requests {
+		if request == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAuthorizationCodeFailsWhenAllLoopbackPortsOccupied(t *testing.T) {
 	holders := make([]net.Listener, len(httpclient.LoopbackPorts))
 	for i, port := range httpclient.LoopbackPorts {

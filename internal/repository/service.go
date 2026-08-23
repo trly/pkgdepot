@@ -23,7 +23,10 @@ var (
 	packagePattern   = regexp.MustCompile(`\.pkg\.tar(?:\.gz|\.bz2|\.xz|\.zst)?$`)
 )
 
-var ErrNotFound = errors.New("package not found")
+var (
+	ErrNotFound           = errors.New("package not found")
+	ErrRepositoryNotFound = errors.New("repository not found")
+)
 
 type Service struct {
 	root     string
@@ -254,7 +257,7 @@ func (s *Service) Rename(oldRepository, newRepository string) error {
 	oldDirectory := filepath.Join(s.repositoriesRoot(), oldRepository)
 	oldInfo, err := os.Lstat(oldDirectory)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("repository %q does not exist", oldRepository)
+		return fmt.Errorf("%w: %q", ErrRepositoryNotFound, oldRepository)
 	}
 	if err != nil {
 		return fmt.Errorf("inspect repository %q: %w", oldRepository, err)
@@ -318,7 +321,7 @@ func (s *Service) RemoveRepository(repository string) error {
 	directory := filepath.Join(s.repositoriesRoot(), repository)
 	info, err := os.Lstat(directory)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("repository %q does not exist", repository)
+		return fmt.Errorf("%w: %q", ErrRepositoryNotFound, repository)
 	}
 	if err != nil {
 		return fmt.Errorf("inspect repository %q: %w", repository, err)

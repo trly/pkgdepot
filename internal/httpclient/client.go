@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -233,6 +234,75 @@ func (c *Client) List(ctx context.Context, repository, architecture string) ([]a
 	return packages, nil
 }
 
+func (c *Client) Repositories(ctx context.Context) ([]api.Repository, error) {
+	endpoint, err := c.repositoriesURL()
+	if err != nil {
+		return nil, err
+	}
+	request, err := c.request(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	var repositories []api.Repository
+	if err := c.do(c.HTTP, request, &repositories); err != nil {
+		return nil, err
+	}
+	return repositories, nil
+}
+
+func (c *Client) CreateRepository(ctx context.Context, repository string) error {
+	endpoint, err := c.repositoryURL(repository)
+	if err != nil {
+		return err
+	}
+	request, err := c.request(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client, err := c.authorizedClient("repo:create")
+	if err != nil {
+		return err
+	}
+	return c.do(client, request, nil)
+}
+
+func (c *Client) RemoveRepository(ctx context.Context, repository string) error {
+	endpoint, err := c.repositoryURL(repository)
+	if err != nil {
+		return err
+	}
+	request, err := c.request(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	client, err := c.authorizedClient("repo:remove")
+	if err != nil {
+		return err
+	}
+	return c.do(client, request, nil)
+}
+
+func (c *Client) RenameRepository(ctx context.Context, repository, newName string) error {
+	endpoint, err := c.repositoryURL(repository)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(api.RenameRepositoryRequest{Name: newName})
+	if err != nil {
+		return fmt.Errorf("encode repository rename: %w", err)
+	}
+	request, err := c.request(ctx, http.MethodPatch, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client, err := c.authorizedClient("repo:rename")
+	if err != nil {
+		return err
+	}
+	return c.do(client, request, nil)
+}
+
 func (c *Client) Remove(ctx context.Context, repository, architecture, packageName string) error {
 	endpoint, err := c.packagesURL(repository, architecture, packageName)
 	if err != nil {
@@ -259,6 +329,25 @@ func (c *Client) packagesURL(repository, architecture string, packageName ...str
 	}
 	components := []string{"api", "v1", "repositories", repository, architecture, "packages"}
 	return appendURLPath(base, append(components, packageName...)...), nil
+}
+
+func (c *Client) repositoriesURL() (*url.URL, error) {
+	if err := urlpolicy.Validate(c.BaseURL, "pkgdepot resource URL"); err != nil {
+		return nil, err
+	}
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse base URL: %w", err)
+	}
+	return appendURLPath(base, "api", "v1", "repositories"), nil
+}
+
+func (c *Client) repositoryURL(repository string) (*url.URL, error) {
+	base, err := c.repositoriesURL()
+	if err != nil {
+		return nil, err
+	}
+	return appendURLPath(base, repository), nil
 }
 
 func appendURLPath(base *url.URL, components ...string) *url.URL {
@@ -661,6 +750,7 @@ func (c *Client) authorizeCode(ctx context.Context, config oauth2.Config, resour
 	redirectURL := fmt.Sprintf("http://%s/oauth/callback", listener.Addr().String())
 	config.RedirectURL = redirectURL
 	callback := make(chan authorizationCallback, 1)
+	var callbackOnce sync.Once
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/oauth/callback" || request.Method != http.MethodGet {
 			w.WriteHeader(http.StatusNotFound)
@@ -675,7 +765,15 @@ func (c *Client) authorizeCode(ctx context.Context, config oauth2.Config, resour
 		} else if result.code == "" {
 			result.err = errors.New("OAuth callback did not include an authorization code")
 		}
-		callback <- result
+		accepted := false
+		callbackOnce.Do(func() {
+			accepted = true
+			callback <- result
+		})
+		if !accepted {
+			http.Error(w, "OAuth callback has already been used", http.StatusBadRequest)
+			return
+		}
 		if result.err != nil {
 			http.Error(w, result.err.Error(), http.StatusBadRequest)
 			return

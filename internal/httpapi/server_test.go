@@ -97,6 +97,75 @@ func TestHealthAndAuthentication(t *testing.T) {
 	}
 }
 
+func TestRepositoryLifecycleAPI(t *testing.T) {
+	service := repository.New(t.TempDir(), commands{})
+	if err := service.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	roleScopes := map[string][]string{"admin": {
+		auth.ScopeRepositoryCreate,
+		auth.ScopeRepositoryRemove,
+		auth.ScopeRepositoryRename,
+	}}
+	server := httptest.NewServer(httpapi.New(service, "http://localhost:8080", httpapi.Options{
+		ResourceAuth: &auth.ResourceServer{
+			Validator: resourceValidator{claims: auth.Claims{
+				Scopes: []string{auth.ScopeRepositoryCreate, auth.ScopeRepositoryRemove, auth.ScopeRepositoryRename},
+				Roles:  []string{"admin"},
+			}},
+			Authorize: func(claims auth.Claims, scope, _, _ string) bool {
+				return auth.AuthorizeRoles(claims, scope, roleScopes, "")
+			},
+			Metadata: auth.ResourceMetadata{Resource: "http://localhost:8080"},
+		},
+	}))
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/repositories/stable", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer valid")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", response.StatusCode)
+	}
+
+	body := bytes.NewBufferString(`{"name":"testing"}`)
+	request, err = http.NewRequest(http.MethodPatch, server.URL+"/api/v1/repositories/stable", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer valid")
+	request.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("rename status = %d", response.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodDelete, server.URL+"/api/v1/repositories/testing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer valid")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove status = %d", response.StatusCode)
+	}
+}
+
 func TestResourceServerAuthenticationAndMetadata(t *testing.T) {
 	service := repository.New(t.TempDir(), commands{})
 	if err := service.Initialize(); err != nil {
