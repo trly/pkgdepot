@@ -22,9 +22,13 @@
         </div>
       </form>
       <aside class="pacman-callout">
-        <strong>Add to <code>/etc/pacman.conf</code></strong>
-        <pre><code>[{{.Repository}}]
+        <div class="pacman-callout-heading">
+          <strong>Add to <code>/etc/pacman.conf</code></strong>
+          <button class="pure-button copy-button" type="button" data-copy-target="pacman-config" aria-describedby="copy-status">Copy</button>
+        </div>
+        <pre id="pacman-config"><code>[{{.Repository}}]
 Server = {{.RepositoryURL}}</code></pre>
+        <span class="copy-status" id="copy-status" role="status" aria-live="polite"></span>
       </aside>
     </div>
     {{if .Packages}}
@@ -66,5 +70,58 @@ Server = {{.RepositoryURL}}</code></pre>
     {{if .Query}}<p>No packages match <strong>{{.Query}}</strong>.</p>{{else}}<p>No packages available.</p>{{end}}
     {{end}}
   </main>
+  <script>
+    function legacyCopy(text) {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      area.setSelectionRange(0, text.length);
+      var copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (error) {
+        copied = false;
+      }
+      document.body.removeChild(area);
+      return copied;
+    }
+
+    document.querySelectorAll('[data-copy-target]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var target = document.getElementById(button.dataset.copyTarget);
+        var status = document.getElementById('copy-status');
+        var text = target.textContent;
+
+        var showRecovery = function () {
+          var range = document.createRange();
+          range.selectNodeContents(target);
+          var selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          status.textContent = 'Copy failed — snippet selected, press Ctrl+C';
+        };
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            status.textContent = 'Copied';
+          }).catch(function () {
+            if (legacyCopy(text)) {
+              status.textContent = 'Copied';
+            } else {
+              showRecovery();
+            }
+          });
+        } else if (legacyCopy(text)) {
+          status.textContent = 'Copied';
+        } else {
+          showRecovery();
+        }
+      });
+    });
+  </script>
 </body>
 </html>

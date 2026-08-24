@@ -255,5 +255,19 @@ go test ./...
 go vet ./...
 ```
 
+To seed a local instance from an existing pkgdepot repository, set the data
+root and run the bootstrap script with the source origin, repository name, and
+architecture. The destination must not already exist:
+
+```sh
+PKGDEPOT_DATA_ROOT=/tmp/pkgdepot \
+  ./scripts/bootstrap-repository.sh \
+  https://packages.trly.dev stable x86_64
+```
+
+The script downloads `<repository>.db.tar.gz` and every package named by that
+database into `repositories/<repository>/<architecture>`. It expects the
+source repository at `/repos/<repository>/<architecture>`.
+
 Run real local package mutations only on a system that supplies
 `/usr/bin/repo-add` and `/usr/bin/repo-remove`.
