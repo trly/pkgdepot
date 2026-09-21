@@ -1,5 +1,5 @@
 ARG GO_IMAGE=golang:1.27-alpine@sha256:4cb7ac979db5fcc41cae44b2227ba5ab8a51e8807f40d9ba4dee20a0ad960b5b
-ARG ARCHLINUX_IMAGE=archlinux:base@sha256:4bf33b21a715aac0b48ce6e9eaed4782a898eae96f88f5da3635572129c2584a
+ARG ARCHLINUX_IMAGE=archlinux:base@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
